@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "Süper Lig Scout & Analiz",
+    "slug": "superlig-scout-mobile",
+    "version": "2.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.superlig.scout"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#070a12"
+      },
+      "package": "com.superlig.scout"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "defaultApiUrl": "http://192.168.1.97:8000/api"
+    },
+    "plugins": [
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash.png",
+          "backgroundColor": "#070a12",
+          "resizeMode": "contain"
+        }
+      ]
+    ]
+  }
+}

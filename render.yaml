@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: superlig-backend
+    runtime: python
+    plan: free
+    buildCommand: "./build.sh"
+    startCommand: "gunicorn core.wsgi:application"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: USE_SQLITE
+        value: "true"
+      - key: SECRET_KEY
+        generateValue: true
+

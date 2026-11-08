@@ -1,0 +1,25 @@
+# Virtual Environment
+env/
+venv/
+.env
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Static & Build
+staticfiles/
+*.log
+
+# Mobile
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/*.log
+
+# Scratch / Temp
+scratch/
+.system_generated/
+
