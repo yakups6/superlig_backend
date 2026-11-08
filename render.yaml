@@ -3,7 +3,7 @@ services:
     name: superlig-backend
     runtime: python
     plan: free
-    buildCommand: "./build.sh"
+    buildCommand: "pip install -r requirements.txt && python manage.py collectstatic --no-input && python manage.py migrate"
     startCommand: "gunicorn core.wsgi:application"
     envVars:
       - key: PYTHON_VERSION
@@ -12,4 +12,5 @@ services:
         value: "true"
       - key: SECRET_KEY
         generateValue: true
+
 
