@@ -17,9 +17,13 @@ staticfiles/
 mobile/node_modules/
 mobile/.expo/
 mobile/dist/
+mobile/android/
+mobile/ios/
 mobile/*.log
 
 # Scratch / Temp
 scratch/
 .system_generated/
+cloudflared.exe
+*.exe
 

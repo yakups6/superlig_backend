@@ -1,0 +1,95 @@
+name: Build Android APK
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Android Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Mobile Dependencies
+        run: |
+          cd mobile
+          npm install
+
+      - name: Generate Android Project via Expo Prebuild
+        run: |
+          cd mobile
+          npx expo prebuild --platform android --no-install
+
+      - name: Build Standalone Android Release APK
+        run: |
+          cd mobile/android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Prepare APK Output
+        run: |
+          mkdir -p output
+          cp mobile/android/app/build/outputs/apk/release/*.apk output/superlig-scout-v2.0.0.apk || cp mobile/android/app/build/outputs/apk/*/*.apk output/superlig-scout.apk
+          ls -la output
+
+      - name: Upload APK to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: superlig-scout-v2.0.0-apk
+          path: output/*.apk
+          retention-days: 30
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: "v2.0.0-${{ github.run_number }}"
+          name: "Süper Lig Scout & Analiz Mobil APK v2.0.0 (Build #${{ github.run_number }})"
+          body: |
+            ## ⚽ Süper Lig Scout & Analiz - Android Yükleme Dosyası (APK)
+            
+            Bu APK dosyasını doğrudan Android telefonunuza indirip tek dokunuşla kurabilirsiniz.
+            
+            ### 🚀 Sürüm Özellikleri:
+            - **Canlı Maç & Fikstür:** 2026/2027 sezonu tüm haftalar, anlık canlı skor akışı
+            - **Puan Durumu & Form Grafiği:** Canlı puan tablosu, averaj, iç/dış saha performansı
+            - **500+ Oyuncu & Detaylı İstatistikler:** Radar grafikleri, piyasa değerleri, scout profilleri
+            - **Maçkolik Tarzı Bildirimler:** Favori kulüpleriniz ve scout oyuncularınız için canlı gol, ilk 11 ve asist bildirimleri
+            - **Transfer Merkezi:** En güncel transfer hareketleri ve kadro analizleri
+            - **7/24 Canlı Bulut Entegrasyonu:** Wi-Fi veya 4.5G üzerinden anında bağlantı
+            
+            ### 📲 Kurulum Talimatı:
+            1. Aşağıdaki **`superlig-scout-v2.0.0.apk`** linkine tıklayarak telefonunuza indirin.
+            2. İndirilen dosyaya dokunun.
+            3. Android güvenlik uyarısı verirse *"Yine de yükle"* veya *"Bu kaynaktan izin ver"* seçeneğini onaylayın.
+            4. Uygulama telefonunuza yüklendi! Keyifle kullanın. 🎉
+          files: output/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
