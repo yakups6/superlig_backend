@@ -13,7 +13,13 @@ export const STORAGE_KEYS = {
   LAST_READ_NOTIF_ID: 'sl_last_read_notif',
 };
 
+export const FALLBACK_PUBLIC_API_URL = 'https://chose-increasingly-robbie-drug.trycloudflare.com/api';
+
 function detectDefaultBaseUrl() {
+  if (Constants.expoConfig?.extra?.defaultApiUrl) {
+    return Constants.expoConfig.extra.defaultApiUrl;
+  }
+
   const hostUri =
     Constants.expoConfig?.hostUri ||
     Constants.manifest2?.extra?.expoGo?.debuggerHost ||
@@ -25,24 +31,9 @@ function detectDefaultBaseUrl() {
     if (host && host !== 'localhost' && host !== '127.0.0.1') {
       return `http://${host}:8000/api`;
     }
-    if (Platform.OS === 'android') {
-      return 'http://10.0.2.2:8000/api';
-    }
-    return 'http://127.0.0.1:8000/api';
   }
 
-  if (Platform.OS === 'web') {
-    return 'http://127.0.0.1:8000/api';
-  }
-
-  return (
-    Constants.expoConfig?.extra?.defaultApiUrl ||
-    Platform.select({
-      android: 'http://10.0.2.2:8000/api',
-      ios: 'http://127.0.0.1:8000/api',
-      default: 'http://127.0.0.1:8000/api',
-    })
-  );
+  return FALLBACK_PUBLIC_API_URL;
 }
 
 let inMemoryAccessToken = '';

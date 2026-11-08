@@ -21,7 +21,7 @@
       "favicon": "./assets/favicon.png"
     },
     "extra": {
-      "defaultApiUrl": "http://192.168.1.97:8000/api"
+      "defaultApiUrl": "https://chose-increasingly-robbie-drug.trycloudflare.com/api"
     },
     "plugins": [
       "expo-font",
