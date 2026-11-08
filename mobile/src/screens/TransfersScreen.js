@@ -9,6 +9,7 @@ import {
   Image,
   ActivityIndicator,
   Alert,
+  RefreshControl,
 } from 'react-native';
 import { superligApi } from '../services/api';
 import { COLORS } from '../theme/colors';
@@ -53,22 +54,11 @@ export default function TransfersScreen({ navigation }) {
     loadTransfers(selectedSeason);
   }, [selectedSeason, loadTransfers]);
 
-  const handleSyncApi = async () => {
-    try {
-      setSyncing(true);
-      try {
-        const res = await superligApi.syncTransfers();
-        Alert.alert(
-          'Senkronizasyon Başarılı',
-          res?.message || 'Transfermarkt verileri başarıyla güncellendi.'
-        );
-      } catch (e) {
-        Alert.alert('Güncellendi', `${selectedSeason} transfer listesi sunucudan tazelendi.`);
-      }
-      await loadTransfers(selectedSeason);
-    } finally {
-      setSyncing(false);
-    }
+  const handleTransferPeriodInfo = () => {
+    Alert.alert(
+      'Transfer Tescil Dönemi Kapalı',
+      'Resmi Süper Lig transfer tescil dönemi şu anda kapalıdır.\n\nYeni transfer hareketleri resmi yaz ve kış transfer dönemlerinde sisteme tescil edildikçe güncellenecektir. Mevcut transfer listesi korunmaktadır.'
+    );
   };
 
   const filteredTransfers = transfers.filter((t) => {
@@ -111,18 +101,24 @@ export default function TransfersScreen({ navigation }) {
         <Text style={styles.headerTitle}>TRANSFER TAKİP</Text>
         <TouchableOpacity
           style={styles.syncBtn}
-          onPress={handleSyncApi}
-          disabled={syncing}
+          onPress={handleTransferPeriodInfo}
+          activeOpacity={0.7}
         >
-          {syncing ? (
-            <ActivityIndicator size="small" color={COLORS.white} />
-          ) : (
-            <Text style={styles.syncText}>🔄 Güncelle</Text>
-          )}
+          <Text style={styles.syncText}>🔒 Dönem Kapalı</Text>
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={loading}
+            onRefresh={() => loadTransfers(selectedSeason)}
+            tintColor={COLORS.primary}
+            colors={[COLORS.primary]}
+          />
+        }
+      >
         <SeasonPickerBar
           seasons={seasons}
           selectedSeasonName={selectedSeason}
@@ -277,14 +273,14 @@ const styles = StyleSheet.create({
   backText: { color: COLORS.white, fontSize: 16, fontWeight: '700' },
   headerTitle: { color: COLORS.white, fontSize: 14, fontWeight: '800' },
   syncBtn: {
-    backgroundColor: 'rgba(6,182,212,0.14)',
+    backgroundColor: 'rgba(234, 179, 8, 0.12)',
     borderWidth: 1,
-    borderColor: 'rgba(6,182,212,0.4)',
+    borderColor: 'rgba(234, 179, 8, 0.35)',
     borderRadius: 8,
     paddingHorizontal: 10,
     paddingVertical: 5,
   },
-  syncText: { color: COLORS.secondary, fontSize: 11, fontWeight: '800' },
+  syncText: { color: COLORS.accentGold, fontSize: 11, fontWeight: '800' },
   scrollContent: { padding: 14, paddingBottom: 40 },
   searchInput: {
     backgroundColor: COLORS.backgroundCard,

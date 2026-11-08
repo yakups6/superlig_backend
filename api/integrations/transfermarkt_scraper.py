@@ -459,7 +459,7 @@ class TransfermarktScraper:
             if not to_team:
                 to_team = Team.objects.create(name=to_name, is_super_lig=(t_type == 'DOMESTIC' or t_type == 'INCOMING'), league_name='Trendyol Süper Lig' if t_type != 'OUTGOING' else 'Dış Lig')
 
-            player = Player.objects.filter(name__icontains=p_name.split()[0]).first()
+            player = Player.objects.filter(name__iexact=p_name).first() or Player.objects.filter(name__icontains=p_name).first()
             if not player:
                 player = Player.objects.create(
                     name=p_name,

@@ -19,7 +19,7 @@ import { computeClientLiveClock } from '../utils/liveClock';
 
 export default function HomeScreen({ navigation }) {
   const isFocused = useIsFocused();
-  const { user, isLoggedIn, activeSeason, favorites, favoriteTeams = [], unreadCount = 0 } = useAuth();
+  const { user, isLoggedIn, activeSeason, favorites, favoriteTeams = [], unreadCount = 0, authReady } = useAuth();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [summary, setSummary] = useState(null);
@@ -27,7 +27,7 @@ export default function HomeScreen({ navigation }) {
   const [apiErrorMsg, setApiErrorMsg] = useState('');
   const [nowMs, setNowMs] = useState(Date.now());
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (isRetry = false) => {
     try {
       const [sumRes, liveRes] = await Promise.allSettled([
         superligApi.getHomeSummary(),
@@ -37,6 +37,11 @@ export default function HomeScreen({ navigation }) {
         setSummary(sumRes.value);
         setApiErrorMsg('');
       } else if (sumRes.status === 'rejected') {
+        if (!isRetry) {
+          // Açılış anındaki geçici gecikmeyi engellemek için sessizce 1 sn sonra tekrar dene
+          setTimeout(() => loadData(true), 1200);
+          return;
+        }
         setApiErrorMsg(sumRes.reason?.message || 'Sunucuya ulaşılamadı');
       }
       if (liveRes.status === 'fulfilled' && liveRes.value) {
@@ -57,11 +62,11 @@ export default function HomeScreen({ navigation }) {
   }, []);
 
   useEffect(() => {
-    if (!isFocused) return;
+    if (!isFocused || !authReady) return;
     loadData();
     const poll = setInterval(loadData, 8000);
     return () => clearInterval(poll);
-  }, [isFocused, loadData]);
+  }, [isFocused, authReady, loadData]);
 
   useEffect(() => {
     if (!isFocused) return;

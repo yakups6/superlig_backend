@@ -13,7 +13,7 @@ export const STORAGE_KEYS = {
   LAST_READ_NOTIF_ID: 'sl_last_read_notif',
 };
 
-export const FALLBACK_PUBLIC_API_URL = 'https://chose-increasingly-robbie-drug.trycloudflare.com/api';
+export const FALLBACK_PUBLIC_API_URL = 'https://tan-thehun-architects-adware.trycloudflare.com/api';
 
 function detectDefaultBaseUrl() {
   if (Constants.expoConfig?.extra?.defaultApiUrl) {
@@ -41,6 +41,17 @@ let inMemoryRefreshToken = '';
 let activeBaseUrl = detectDefaultBaseUrl();
 let unauthorizedHandler = null;
 let refreshPromise = null;
+let storageInitPromise = null;
+
+export function ensureStorageInitialized() {
+  if (!storageInitPromise) {
+    storageInitPromise = initApiClientFromStorage();
+  }
+  return storageInitPromise;
+}
+
+// Start restoring storage as soon as JS bundle is evaluated
+ensureStorageInitialized();
 
 const apiClient = axios.create({
   baseURL: activeBaseUrl,
@@ -70,6 +81,11 @@ export async function setCustomApiUrl(url) {
     activeBaseUrl = normalized;
   }
   apiClient.defaults.baseURL = activeBaseUrl;
+  storageInitPromise = Promise.resolve({
+    access: inMemoryAccessToken,
+    refresh: inMemoryRefreshToken,
+    baseUrl: activeBaseUrl,
+  });
   return activeBaseUrl;
 }
 
@@ -105,7 +121,8 @@ export function setAuthTokensInMemory(access, refresh) {
   }
 }
 
-apiClient.interceptors.request.use((config) => {
+apiClient.interceptors.request.use(async (config) => {
+  await ensureStorageInitialized();
   config.baseURL = activeBaseUrl;
   if (inMemoryAccessToken) {
     config.headers = config.headers || {};

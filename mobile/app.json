@@ -15,13 +15,14 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#070a12"
       },
-      "package": "com.superlig.scout"
+      "package": "com.superlig.scout",
+      "usesCleartextTraffic": true
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "extra": {
-      "defaultApiUrl": "https://chose-increasingly-robbie-drug.trycloudflare.com/api"
+      "defaultApiUrl": "https://tan-thehun-architects-adware.trycloudflare.com/api"
     },
     "plugins": [
       "expo-font",
