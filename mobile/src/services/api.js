@@ -13,7 +13,7 @@ export const STORAGE_KEYS = {
   LAST_READ_NOTIF_ID: 'sl_last_read_notif',
 };
 
-export const FALLBACK_PUBLIC_API_URL = 'https://tan-thehun-architects-adware.trycloudflare.com/api';
+export const FALLBACK_PUBLIC_API_URL = 'https://superlig-backend.onrender.com/api';
 
 function detectDefaultBaseUrl() {
   if (Constants.expoConfig?.extra?.defaultApiUrl) {

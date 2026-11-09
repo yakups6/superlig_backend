@@ -22,7 +22,7 @@
       "favicon": "./assets/favicon.png"
     },
     "extra": {
-      "defaultApiUrl": "https://tan-thehun-architects-adware.trycloudflare.com/api"
+      "defaultApiUrl": "https://superlig-backend.onrender.com/api"
     },
     "plugins": [
       "expo-font",
