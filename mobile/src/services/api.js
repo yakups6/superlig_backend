@@ -98,7 +98,15 @@ export async function initApiClientFromStorage() {
     ]);
     inMemoryAccessToken = acc || '';
     inMemoryRefreshToken = ref || '';
-    activeBaseUrl = customUrl || detectDefaultBaseUrl();
+    if (customUrl && (customUrl.includes('trycloudflare.com') || customUrl.includes('loca.lt') || customUrl.includes('ngrok'))) {
+      // Geçici tünel bağlantıları oturum kapandığında geçersiz kalır; kalıcı Render bulut adresine dön
+      try {
+        await AsyncStorage.removeItem(STORAGE_KEYS.CUSTOM_URL);
+      } catch (rmErr) {}
+      activeBaseUrl = detectDefaultBaseUrl();
+    } else {
+      activeBaseUrl = customUrl || detectDefaultBaseUrl();
+    }
     apiClient.defaults.baseURL = activeBaseUrl;
     return {
       access: inMemoryAccessToken,
