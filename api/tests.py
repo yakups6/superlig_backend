@@ -473,6 +473,188 @@ class SuperLigAPITestCase(TestCase):
         self.assertEqual(bench_st.matches, 2)
         self.assertEqual(bench_st.clean_sheets, 1)
 
+    def test_instant_post_match_update_when_espn_roster_lags_updates_clean_sheet_and_rating(self):
+        """ESPN /roster gecikse bile maç biter bitmez /summary üzerinden gol, asist, clean sheet ve reyting güncellenmeli"""
+        from unittest.mock import Mock
+        from api.integrations import APIFootballService
+
+        LeagueStanding.objects.update_or_create(
+            season=self.season, team=self.gs,
+            defaults={"rank": 1, "played": 13, "won": 10, "drawn": 2, "lost": 1, "goals_for": 30, "goals_against": 10, "points": 32}
+        )
+        LeagueStanding.objects.update_or_create(
+            season=self.season, team=self.fb,
+            defaults={"rank": 2, "played": 13, "won": 9, "drawn": 2, "lost": 2, "goals_for": 25, "goals_against": 12, "points": 29}
+        )
+        starter_gk = Player.objects.create(
+            name="Uğurcan Çakır", current_team=self.gs, position="Kaleci", jersey_number=1, is_active=True
+        )
+        PlayerSeasonStats.objects.create(
+            player=starter_gk, season=self.season, team=self.gs,
+            matches=13, minutes=1170, goals=0, assists=0, clean_sheets=4, rating=7.10
+        )
+        bench_gk = Player.objects.create(
+            name="Günay Güvenç", current_team=self.gs, position="Kaleci", jersey_number=19, is_active=True
+        )
+        PlayerSeasonStats.objects.create(
+            player=bench_gk, season=self.season, team=self.gs,
+            matches=2, minutes=180, goals=0, assists=0, clean_sheets=1, rating=6.80
+        )
+        sub_wing = Player.objects.create(
+            name="Barış Alper Yılmaz", current_team=self.gs, position="Sağ Kanat", jersey_number=53, is_active=True
+        )
+        PlayerSeasonStats.objects.create(
+            player=sub_wing, season=self.season, team=self.gs,
+            matches=11, minutes=700, goals=2, assists=2, shots_per_game=2.0, rating=7.20
+        )
+        osimhen_st = PlayerSeasonStats.objects.get(player=self.osimhen, season=self.season, team=self.gs)
+        osimhen_st.matches = 13
+        osimhen_st.minutes = 1200
+        osimhen_st.goals = 11
+        osimhen_st.assists = 3
+        osimhen_st.shots_per_game = 4.0
+        osimhen_st.save()
+
+        pending_fix = Fixture.objects.create(
+            season=self.season,
+            round_name="14. Hafta",
+            round_number=14,
+            home_team=self.gs,
+            away_team=self.fb,
+            match_date=timezone.now(),
+            status="NS",
+            status_display="19:00",
+        )
+
+        # ESPN /roster hala 13. haftada (gecikmeli)
+        lagging_gs_roster = [
+            {
+                "name": "Victor Osimhen", "jersey": 45, "pos_abbr": "F",
+                "matches": 13, "goals": 11, "assists": 3, "total_shots": 52,
+                "shots_on_target": 24, "yellow_cards": 1, "red_cards": 0, "saves": 0, "goals_conceded": 0,
+            },
+            {
+                "name": "Uğurcan Çakır", "jersey": 1, "pos_abbr": "G",
+                "matches": 13, "goals": 0, "assists": 0, "total_shots": 0,
+                "shots_on_target": 0, "yellow_cards": 0, "red_cards": 0, "saves": 32, "goals_conceded": 10,
+            },
+            {
+                "name": "Barış Alper Yılmaz", "jersey": 53, "pos_abbr": "M",
+                "matches": 11, "goals": 2, "assists": 2, "total_shots": 22,
+                "shots_on_target": 10, "yellow_cards": 2, "red_cards": 0, "saves": 0, "goals_conceded": 0,
+            },
+            {
+                "name": "Günay Güvenç", "jersey": 19, "pos_abbr": "G",
+                "matches": 2, "goals": 0, "assists": 0, "total_shots": 0,
+                "shots_on_target": 0, "yellow_cards": 0, "red_cards": 0, "saves": 5, "goals_conceded": 1,
+            },
+        ]
+
+        summary_payload = {
+            "rosters": [
+                {
+                    "homeAway": "home",
+                    "team": {"displayName": "Galatasaray"},
+                    "roster": [
+                        {
+                            "starter": True, "subbedIn": False, "jersey": "1",
+                            "athlete": {"displayName": "Uğurcan Çakır"},
+                            "position": {"abbreviation": "G"},
+                            "stats": [
+                                {"name": "appearances", "value": 1.0},
+                                {"name": "saves", "value": 4.0},
+                                {"name": "goalsConceded", "value": 0.0},
+                            ],
+                        },
+                        {
+                            "starter": True, "subbedIn": False, "jersey": "45",
+                            "athlete": {"displayName": "Victor Osimhen"},
+                            "position": {"abbreviation": "F"},
+                            "stats": [
+                                {"name": "appearances", "value": 1.0},
+                                {"name": "totalGoals", "value": 1.0},
+                                {"name": "totalShots", "value": 4.0},
+                            ],
+                        },
+                        {
+                            "starter": False, "subbedIn": True, "jersey": "53",
+                            "athlete": {"displayName": "Barış Alper Yılmaz"},
+                            "position": {"abbreviation": "M"},
+                            "stats": [
+                                {"name": "appearances", "value": 1.0},
+                                {"name": "subIns", "value": 1.0},
+                                {"name": "goalAssists", "value": 1.0},
+                                {"name": "totalShots", "value": 2.0},
+                            ],
+                        },
+                        {
+                            "starter": False, "subbedIn": False, "jersey": "19",
+                            "athlete": {"displayName": "Günay Güvenç"},
+                            "position": {"abbreviation": "G"},
+                            "stats": [{"name": "appearances", "value": 0.0}],
+                        },
+                    ],
+                },
+                {"homeAway": "away", "team": {"displayName": "Fenerbahçe"}, "roster": []},
+            ]
+        }
+        mock_resp = Mock(status_code=200)
+        mock_resp.json.return_value = summary_payload
+
+        def fake_roster(team_or_name, session=None):
+            return lagging_gs_roster if getattr(team_or_name, "id", None) == self.gs.id else []
+
+        with patch.object(APIFootballService, "fetch_espn_club_roster_stats", side_effect=fake_roster):
+            with patch("api.integrations.api_football.requests.get", return_value=mock_resp):
+                ran = APIFootballService._finalize_finished_fixture_atomically(
+                    pending_fix.id,
+                    2,
+                    0,
+                    [{"side": "home", "scorer": "Victor Osimhen", "assist": "Barış Alper Yılmaz"}],
+                    espn_event_id="401999999",
+                )
+        self.assertTrue(ran)
+
+        osimhen_st.refresh_from_db()
+        gk_st = PlayerSeasonStats.objects.get(player=starter_gk, season=self.season, team=self.gs)
+        wing_st = PlayerSeasonStats.objects.get(player=sub_wing, season=self.season, team=self.gs)
+        bench_st = PlayerSeasonStats.objects.get(player=bench_gk, season=self.season, team=self.gs)
+
+        # Gecikmeli /roster olsa bile maç sonu hemen 14. haftaya güncellenmeli
+        self.assertEqual(osimhen_st.matches, 14)
+        self.assertEqual(osimhen_st.goals, 12)
+        self.assertEqual(osimhen_st.minutes, 1290)
+        self.assertAlmostEqual(osimhen_st.shots_per_game, 4.0, places=2)
+        self.assertEqual(wing_st.matches, 12)
+        self.assertEqual(wing_st.assists, 3)
+        self.assertEqual(wing_st.minutes, 725)
+        self.assertEqual(gk_st.matches, 14)
+        self.assertEqual(gk_st.clean_sheets, 5)
+        self.assertGreater(gk_st.rating, 7.10)
+        # Kullanılmayan yedek kaleci kesinlikle etkilenmemeli
+        self.assertEqual(bench_st.matches, 2)
+        self.assertEqual(bench_st.clean_sheets, 1)
+
+        # Sonradan ESPN /roster 14. haftaya yetiştiğinde çift sayım olmamalı
+        caught_up_gs_roster = [
+            {**lagging_gs_roster[0], "matches": 14, "goals": 12, "total_shots": 56},
+            {**lagging_gs_roster[1], "matches": 14, "saves": 36, "goals_conceded": 10},
+            {**lagging_gs_roster[2], "matches": 12, "assists": 3, "total_shots": 24},
+            lagging_gs_roster[3],
+        ]
+        APIFootballService.sync_team_espn_player_stats(
+            self.season, self.gs, espn_entries=caught_up_gs_roster, opp_conceded=0, team_played=14
+        )
+        osimhen_st.refresh_from_db()
+        gk_st.refresh_from_db()
+        wing_st.refresh_from_db()
+        self.assertEqual(osimhen_st.matches, 14)
+        self.assertEqual(osimhen_st.goals, 12)
+        self.assertEqual(gk_st.matches, 14)
+        self.assertEqual(gk_st.clean_sheets, 5)
+        self.assertEqual(wing_st.matches, 12)
+        self.assertEqual(wing_st.assists, 3)
+
     def test_transfer_sync_deduplicates_domestic_and_preserves_history(self):
         """Canlı transfer senkronizasyonu geçmiş sezonları korur ve lig içi/dış takımları tekilleştirir"""
         from api.integrations import TransfermarktScraper
