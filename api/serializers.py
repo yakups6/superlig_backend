@@ -287,8 +287,12 @@ class TeamDetailSerializer(serializers.ModelSerializer):
         seen_names = set()
         if target_season:
             qs = PlayerSeasonStats.objects.filter(team=obj, season=target_season).select_related('player')
-            active_stats = qs.filter(Q(matches__gt=0) | ~Q(transfer_note=''))
-            season_stats = active_stats if active_stats.count() >= 12 else qs
+            if target_season.is_current:
+                # Güncel sezonda diff senkronizasyonu sonrası sadece gerçek aktif kadro yer alır; yedek kaleciler dahil tümünü göster
+                season_stats = qs
+            else:
+                active_stats = qs.filter(Q(matches__gt=0) | ~Q(transfer_note=''))
+                season_stats = active_stats if active_stats.count() >= 12 else qs
             
             is_historical = (target_season.start_year < 2004)
             if is_historical:

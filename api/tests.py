@@ -237,3 +237,147 @@ class SuperLigAPITestCase(TestCase):
         self.assertEqual(attr.shooting, 88)
         self.assertIn("Ceza sahası bitiriciliği", attr.strengths)
 
+    def test_squad_diff_preserves_history_and_handles_intra_league(self):
+        """Kadro farkı algoritması ayrılanları arşive taşır, geçmiş veriyi korur ve lig içi transferi tek kulübe alır"""
+        from api.integrations import TransfermarktScraper
+
+        old_season = Season.objects.create(
+            name="2024/2025",
+            start_year=2024,
+            end_year=2025,
+            start_date=date(2024, 8, 1),
+            end_date=date(2025, 6, 30),
+            is_current=False,
+        )
+        departing = Player.objects.create(
+            name="Fernando Muslera", current_team=self.gs, position="Kaleci", is_active=True
+        )
+        PlayerSeasonStats.objects.create(
+            player=departing, season=old_season, team=self.gs, matches=34, minutes=3060, goals=0
+        )
+        PlayerSeasonStats.objects.create(
+            player=departing, season=self.season, team=self.gs, matches=0, minutes=0, goals=0
+        )
+
+        # Sahte canlı veri oluştur (En-Nesyri GS'ye geçsin, Muslera kadroda olmasın, Ederson MK+TM tekilleşsin)
+        def make_filler(prefix, count):
+            return [
+                {
+                    "tm_id": f"{prefix}{i}",
+                    "name": f"{prefix} Player {i}",
+                    "jersey_number": 50 + i,
+                    "position": "Stoper",
+                    "age": 24,
+                    "nationality": "Türkiye",
+                    "market_value": 1000000.0,
+                    "image_url": None,
+                    "matches": 1,
+                    "goals": 0,
+                    "assists": 0,
+                    "minutes": 90,
+                    "yellow_cards": 0,
+                    "red_cards": 0,
+                    "sources": ["transfermarkt"],
+                }
+                for i in range(count)
+            ]
+
+        pre_fetched = {
+            self.gs.id: {
+                "tm_players": [
+                    {
+                        "tm_id": "1",
+                        "name": "Victor Osimhen",
+                        "jersey_number": 45,
+                        "position": "Santrafor",
+                        "age": 27,
+                        "nationality": "Nijerya",
+                        "market_value": 65000000.0,
+                        "image_url": None,
+                        "matches": 8,
+                        "goals": 9,
+                        "assists": 3,
+                        "minutes": 700,
+                        "yellow_cards": 1,
+                        "red_cards": 0,
+                        "sources": ["transfermarkt"],
+                    },
+                    {
+                        "tm_id": "2",
+                        "name": "Youssef En-Nesyri",
+                        "jersey_number": 19,
+                        "position": "Santrafor",
+                        "age": 29,
+                        "nationality": "Fas",
+                        "market_value": 20000000.0,
+                        "image_url": None,
+                        "matches": 5,
+                        "goals": 4,
+                        "assists": 1,
+                        "minutes": 400,
+                        "yellow_cards": 0,
+                        "red_cards": 0,
+                        "sources": ["transfermarkt"],
+                    },
+                    *make_filler("GS", 15),
+                ],
+                "mk_players": [],
+            },
+            self.fb.id: {
+                "tm_players": [
+                    {
+                        "tm_id": "31",
+                        "name": "Ederson",
+                        "jersey_number": 31,
+                        "position": "Kaleci",
+                        "age": 33,
+                        "nationality": "Brezilya",
+                        "market_value": 15000000.0,
+                        "image_url": None,
+                        "matches": 10,
+                        "goals": 0,
+                        "assists": 0,
+                        "minutes": 900,
+                        "yellow_cards": 0,
+                        "red_cards": 0,
+                        "sources": ["transfermarkt"],
+                    },
+                    *make_filler("FB", 15),
+                ],
+                "mk_players": [
+                    {
+                        "name": "Ederson Santana de Moraes",
+                        "jersey_number": 31,
+                        "position": "Kaleci",
+                        "age": 33,
+                        "matches_all_comp": 10,
+                        "goals_all_comp": 0,
+                        "assists_all_comp": 0,
+                    }
+                ],
+            },
+        }
+
+        summary = TransfermarktScraper.sync_live_squads_with_diff(
+            teams=[self.gs, self.fb], season=self.season, pre_fetched=pre_fetched
+        )
+        self.assertEqual(summary["teams_synced"], 2)
+
+        # Ayrılan Muslera silinmemeli, geçmişi korunmalı ve Eski Oyunculara geçmeli
+        departing.refresh_from_db()
+        self.assertIsNone(departing.current_team)
+        self.assertFalse(departing.is_active)
+        self.assertTrue(departing.is_legend)
+        self.assertTrue(PlayerSeasonStats.objects.filter(player=departing, season=old_season, team=self.gs).exists())
+        self.assertFalse(PlayerSeasonStats.objects.filter(player=departing, season=self.season, team=self.gs).exists())
+
+        # Lig içi transfer En-Nesyri sadece GS aktif kadrosunda olmalı
+        self.en_nesyri.refresh_from_db()
+        self.assertEqual(self.en_nesyri.current_team_id, self.gs.id)
+        self.assertFalse(PlayerSeasonStats.objects.filter(player=self.en_nesyri, season=self.season, team=self.fb).exists())
+        self.assertTrue(PlayerSeasonStats.objects.filter(player=self.en_nesyri, season=self.season, team=self.gs).exists())
+
+        # Ederson + Ederson Santana de Moraes tekilleşmiş olmalı (1 kaleci)
+        self.assertEqual(Player.objects.filter(current_team=self.fb, jersey_number=31).count(), 1)
+
+

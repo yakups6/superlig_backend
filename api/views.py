@@ -1740,24 +1740,27 @@ class SyncSquadsView(APIView):
     )
     def post(self, request):
         team_id = request.query_params.get('team_id')
-        total_players = 0
         if team_id:
             team = Team.objects.filter(id=team_id).first()
             if not team:
                 return Response({"error": "Takım bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
             players = TransfermarktScraper.scrape_team_squad(team)
-            total_players = len(players)
-        else:
-            teams = Team.objects.filter(is_super_lig=True)
-            for t in teams:
-                p_list = TransfermarktScraper.scrape_team_squad(t)
-                total_players += len(p_list)
+            return Response({
+                "status": "success",
+                "message": f"{team.name} için {len(players)} aktif oyuncu kadrosu güncellendi.",
+                "count": len(players),
+                "source": "Transfermarkt + Mackolik (Canlı Kadro Farkı)",
+                "timestamp": timezone.now()
+            }, status=status.HTTP_200_OK)
 
+        summary = TransfermarktScraper.sync_live_squads_with_diff()
+        total_players = summary.get('active_players_upserted', 0)
         return Response({
             "status": "success",
-            "message": f"Transfermarkt üzerinden {total_players} oyuncu kadrosu güncellendi.",
+            "message": f"Canlı kadro farkı ile {total_players} aktif oyuncu güncellendi.",
             "count": total_players,
-            "source": "Transfermarkt (Web Scraping)",
+            "summary": summary,
+            "source": "Transfermarkt + Mackolik (Canlı Kadro Farkı)",
             "timestamp": timezone.now()
         }, status=status.HTTP_200_OK)
 
@@ -1828,19 +1831,22 @@ class SyncAllView(APIView):
     )
     def post(self, request):
         TransfermarktScraper.scrape_super_lig_teams()
+        squad_summary = TransfermarktScraper.sync_live_squads_with_diff()
         transfers = TransfermarktScraper.scrape_super_lig_transfers()
         attr_count = PlayerAnalyticsService.sync_all_players_attributes()
         fixtures = APIFootballService.fetch_and_sync_fixtures()
 
         return Response({
             "status": "success",
-            "message": "Tüm entegrasyonlar (Transfermarkt, SofaScore/WhoScored, API-Football) başarıyla tamamlandı.",
+            "message": "Tüm entegrasyonlar (Transfermarkt, Mackolik, Analitik, API-Football) başarıyla tamamlandı.",
             "summary": {
+                "squads_synced": squad_summary.get("active_players_upserted", 0),
+                "detached_to_legends": squad_summary.get("detached_to_legends", 0),
                 "transfers_synced": len(transfers),
                 "player_attributes_synced": attr_count,
                 "fixtures_synced": len(fixtures)
             },
-            "source": "Transfermarkt + SofaScore/WhoScored + API-Football (RapidAPI)",
+            "source": "Transfermarkt + Mackolik + Analitik + API-Football",
             "timestamp": timezone.now()
         }, status=status.HTTP_200_OK)
 
