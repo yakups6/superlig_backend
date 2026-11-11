@@ -2,6 +2,7 @@ import logging
 import re
 import time
 import unicodedata
+from datetime import date
 from decimal import Decimal
 from difflib import SequenceMatcher
 
@@ -11,7 +12,7 @@ from django.db import transaction
 from django.db.models import Count, Max, Q
 
 from api.integrations.player_analytics import PlayerAnalyticsService
-from api.models import LeagueStanding, Player, PlayerAttribute, PlayerSeasonStats, Season, Team
+from api.models import LeagueStanding, Player, PlayerAttribute, PlayerSeasonStats, Season, Team, Transfer
 
 logger = logging.getLogger(__name__)
 
@@ -1228,13 +1229,411 @@ class TransfermarktScraper:
         """Geriye dönük uyumluluk: mevcut Süper Lig takımlarını döndürür."""
         return list(Team.objects.filter(is_super_lig=True).order_by("id"))
 
-    @classmethod
-    def scrape_super_lig_transfers(cls, season: Season | None = None):
-        """Geriye dönük uyumluluk: mevcut transfer kayıtlarını koruyarak ilgili sezon transferlerini döndürür."""
-        from api.models import Transfer
+    TR_MONTHS_SHORT = {
+        "oca": 1, "sub": 2, "mar": 3, "nis": 4,
+        "may": 5, "haz": 6, "tem": 7, "agu": 8,
+        "eyl": 9, "eki": 10, "kas": 11, "ara": 12,
+    }
 
+    NO_CLUB_LABELS = {
+        "kulupsuz", "kariyer sonu", "futbolu birakti", "ara verdi", "bilinmiyor", "", "-"
+    }
+
+    @classmethod
+    def _parse_tm_tr_date(cls, text: str) -> date | None:
+        m = re.search(r"(\d{1,2})\s+([A-Za-zÇĞİÖŞÜçğıöşü]+)\s+(\d{4})", text or "")
+        if not m:
+            return None
+        mon_key = cls._norm_text(m.group(2))[:3]
+        month = cls.TR_MONTHS_SHORT.get(mon_key)
+        if not month:
+            return None
+        try:
+            return date(int(m.group(3)), month, int(m.group(1)))
+        except ValueError:
+            return None
+
+    @classmethod
+    def _parse_tm_transfer_fee(cls, fee_raw: str) -> tuple[str, float, str]:
+        """Transfermarkt bonservis/kiralama metnini (contract_type, tutar, özet) olarak ayrıştırır."""
+        raw = (fee_raw or "").strip()
+        low = cls._norm_text(raw)
+        if "kiralama" in low or "kira" in low:
+            amount = cls.parse_market_value(raw)
+            note = f"{amount / 1_000_000:.2f}M € Kiralık" if amount >= 1_000_000 else (
+                f"{int(round(amount / 1_000))}B € Kiralık" if amount >= 1_000 else "Kiralık"
+            )
+            return "LOAN", amount, note
+        if "draft" in low:
+            return "FREE", 0.0, "Takas"
+        amount = cls.parse_market_value(raw)
+        if amount > 0:
+            fmt = f"{amount / 1_000_000:.2f}M €" if amount >= 1_000_000 else f"{int(round(amount / 1_000))}B €"
+            return "PERMANENT", amount, f"{fmt} Bonservis"
+        return "FREE", 0.0, "Bedelsiz"
+
+    @classmethod
+    def _strip_club_affixes(cls, norm_name: str) -> str:
+        tokens = [
+            t for t in norm_name.split()
+            if t not in {"fc", "fk", "sk", "sc", "ac", "as", "ss", "afc", "bsc", "ogc", "rc", "ud", "cd", "cf", "rcd", "gd", "tsg", "jk", "ik"}
+        ]
+        return " ".join(tokens) or norm_name
+
+    @classmethod
+    def _resolve_or_create_external_team(
+        cls, raw_name: str, logo_url: str | None = None, ext_cache: dict[str, Team] | None = None
+    ) -> Team | None:
+        clean = cls._clean_display_name(raw_name)
+        norm = cls._norm_text(clean)
+        if not norm or norm in cls.NO_CLUB_LABELS:
+            return None
+
+        cache = ext_cache if ext_cache is not None else {}
+        stripped = cls._strip_club_affixes(norm)
+        team = cache.get(norm) or cache.get(stripped)
+        if not team:
+            abbr = "".join(w[0] for w in clean.split() if w)[:5].upper() or clean[:4].upper()
+            team = Team.objects.create(
+                name=clean[:100],
+                short_name=abbr,
+                logo_url=logo_url,
+                is_super_lig=False,
+                league_name="Dış Lig",
+            )
+            cache[norm] = team
+            cache[stripped] = team
+        elif logo_url and not team.logo_url:
+            team.logo_url = logo_url
+            team.save(update_fields=["logo_url"])
+        return team
+
+    @classmethod
+    def _resolve_transfer_player(
+        cls,
+        pname: str,
+        pos: str,
+        age: int | None,
+        mv: float,
+        portrait_url: str | None,
+        sl_team_ids: tuple[int | None, int | None],
+        db_idx: dict,
+    ) -> Player:
+        """Mevcut oyuncuyu bulur (aktif takım bağını bozmaz) veya yoksa pasif transfer kaydı açar."""
+        norm = cls._norm_text(pname)
+        trans = cls._translit_text(pname)
+        cands = [
+            m for m in (db_idx["by_norm"].get(norm, []) + db_idx["by_translit"].get(trans, []))
+            if (m["last_year"] is None or m["last_year"] >= 2012 or m["current_team_id"] in sl_team_ids)
+        ]
+        if cands:
+            best = max(
+                cands,
+                key=lambda m: (
+                    1 if m["current_team_id"] in sl_team_ids and m["current_team_id"] is not None else 0,
+                    1 if m["is_active"] else 0,
+                    m["last_year"] or 0,
+                    m["stats_count"] or 0,
+                    -m["id"],
+                ),
+            )
+            player = Player.objects.get(id=best["id"])
+            if portrait_url and not player.image_url:
+                player.image_url = portrait_url
+                player.save(update_fields=["image_url"])
+            return player
+
+        player = Player.objects.create(
+            name=pname[:100],
+            current_team=None,
+            position=(pos or "Futbolcu")[:50],
+            age=age,
+            market_value=Decimal(f"{float(mv or 0):.2f}"),
+            image_url=portrait_url,
+            is_active=False,
+            is_legend=True,
+        )
+        # İndekse ekle ki aynı pencerede ikinci transferinde tekilleşsin
+        meta = {
+            "id": player.id,
+            "name": player.name,
+            "current_team_id": None,
+            "is_active": False,
+            "is_legend": True,
+            "position": player.position,
+            "last_year": None,
+            "stats_count": 0,
+            "norm": norm,
+            "trans": trans,
+        }
+        db_idx["by_norm"].setdefault(norm, []).append(meta)
+        db_idx["by_translit"].setdefault(trans, []).append(meta)
+        return player
+
+    @classmethod
+    def fetch_live_league_transfers(cls, season: Season | None = None) -> list[dict]:
+        """Transfermarkt Süper Lig sezon transferlerini + son transfer tarihlerini çeker."""
         if season is None:
             season = Season.get_active_season()
+        season_year = season.start_year
+        session = cls._build_session()
+
+        # 1. Son transfer tarihleri ve portreler
+        latest_url = f"{cls.BASE_URL}/super-lig/letztetransfers/wettbewerb/TR1/plus/1"
+        lt_by_move: dict[tuple[str, int | None], dict] = {}
+        lt_by_pid: dict[str, dict] = {}
+        lt_html = cls._fetch_html(session, latest_url, min_len=3000)
+        if lt_html:
+            s_lt = BeautifulSoup(lt_html, "html.parser")
+            t_lt = s_lt.find("table", class_="items")
+            tbody_lt = t_lt.find("tbody") if t_lt else None
+            if tbody_lt:
+                for tr in tbody_lt.find_all("tr", class_=["odd", "even"]):
+                    a_p = tr.find("a", href=re.compile(r"/spieler/\d+"))
+                    if not a_p:
+                        continue
+                    pid = re.search(r"/spieler/(\d+)", a_p.get("href", "")).group(1)
+                    tds = tr.find_all("td", recursive=False)
+                    parsed_d = cls._parse_tm_tr_date(tds[5].get_text(strip=True)) if len(tds) > 5 else None
+                    img = tr.find("img", class_="bilderrahmen-fixed")
+                    portrait = None
+                    if img:
+                        cand = (img.get("data-src") or img.get("src") or "").replace("/small/", "/header/")
+                        if cand and "default" not in cand:
+                            portrait = cand
+                    club_links = tr.find_all("a", href=re.compile(r"/verein/\d+"))
+                    to_vid = None
+                    if len(club_links) >= 2:
+                        m_to = re.search(r"/verein/(\d+)", club_links[-1].get("href", ""))
+                        if m_to:
+                            to_vid = int(m_to.group(1))
+                    entry = {"date": parsed_d, "img": portrait}
+                    if parsed_d and (pid, to_vid) not in lt_by_move:
+                        lt_by_move[(pid, to_vid)] = entry
+                    if pid not in lt_by_pid:
+                        lt_by_pid[pid] = entry
+
+        # 2. Lig genel transfer tablosu (18 kulüp gelen & giden)
+        tr_url = f"{cls.BASE_URL}/super-lig/transfers/wettbewerb/TR1/saison_id/{season_year}"
+        tr_html = cls._fetch_html(session, tr_url, min_len=5000)
+        if not tr_html:
+            return []
+        soup = BeautifulSoup(tr_html, "html.parser")
+        all_sl_vids = {int(cfg[1]) for cfg in cls.CLUB_SOURCES.values()}
+
+        events: dict[tuple, dict] = {}
+        fallback_date = date(season_year, 7, 15)
+
+        for box in soup.find_all("div", class_="box"):
+            hdr = box.find(["h2", "div"], class_=re.compile(r"content-box-headline"))
+            tbls = box.find_all("table")
+            if not (hdr and len(tbls) == 2):
+                continue
+            a_club = hdr.find("a", href=re.compile(r"/verein/\d+"))
+            if not a_club:
+                continue
+            sl_vid = int(re.search(r"/verein/(\d+)", a_club.get("href", "")).group(1))
+            if sl_vid not in all_sl_vids:
+                continue
+
+            club_rows = []
+            in_pids: set[str] = set()
+            for kind, tbl in (("IN", tbls[0]), ("OUT", tbls[1])):
+                tbody = tbl.find("tbody")
+                if not tbody:
+                    continue
+                for tr in tbody.find_all("tr"):
+                    a_p = tr.find("a", href=re.compile(r"/spieler/\d+"))
+                    if not a_p:
+                        continue
+                    pid = re.search(r"/spieler/(\d+)", a_p.get("href", "")).group(1)
+                    pname = cls._clean_display_name(a_p.get_text(strip=True))
+                    tds = [td.get_text(" ", strip=True) for td in tr.find_all("td", recursive=False)]
+                    if len(tds) < 6:
+                        continue
+                    age = cls._parse_int(tds[1]) or None
+                    pos = tds[3] or "Futbolcu"
+                    mv = cls.parse_market_value(tds[5])
+                    fee_raw = tds[-1]
+
+                    club_links = tr.find_all("a", href=re.compile(r"/verein/\d+"))
+                    other_vid = None
+                    other_logo = None
+                    if club_links:
+                        last_a = club_links[-1]
+                        m_ov = re.search(r"/verein/(\d+)", last_a.get("href", ""))
+                        if m_ov:
+                            other_vid = int(m_ov.group(1))
+                        other_name = last_a.get("title", "").strip() or last_a.get_text(strip=True)
+                        w_img = tr.find("img", class_="tiny_wappen")
+                        if w_img:
+                            raw_src = w_img.get("src") or w_img.get("data-src") or ""
+                            if raw_src:
+                                other_logo = raw_src.replace("/tiny/", "/head/")
+                    else:
+                        other_name = tds[7] if len(tds) > 7 else ""
+
+                    # Kiralıktan geri dönenleri ve altyapı iç terfilerini atla
+                    if "Kiralıktan geri döndü" in fee_raw:
+                        continue
+                    if any(tag in other_name for tag in ("U19", "U21", "U17", "Altyapı")) and cls.parse_market_value(fee_raw) == 0:
+                        continue
+
+                    if kind == "IN":
+                        in_pids.add(pid)
+                    club_rows.append((kind, pid, pname, age, pos, mv, other_vid, other_name, other_logo, fee_raw))
+
+            for kind, pid, pname, age, pos, mv, other_vid, other_name, other_logo, fee_raw in club_rows:
+                other_norm = cls._norm_text(other_name)
+                # Aynı kulübe aynı pencerede gelen oyuncunun geçici Kulüpsüz çıkış artığını atla
+                if kind == "OUT" and other_norm in cls.NO_CLUB_LABELS and pid in in_pids:
+                    continue
+
+                if kind == "IN":
+                    from_vid = other_vid if other_vid in all_sl_vids else None
+                    from_ext = "" if (from_vid or other_norm in cls.NO_CLUB_LABELS) else other_name
+                    to_vid = sl_vid
+                    to_ext = ""
+                    from_logo = other_logo if from_ext else None
+                    to_logo = None
+                else:
+                    from_vid = sl_vid
+                    from_ext = ""
+                    to_vid = other_vid if other_vid in all_sl_vids else None
+                    to_ext = "" if (to_vid or other_norm in cls.NO_CLUB_LABELS) else other_name
+                    from_logo = None
+                    to_logo = other_logo if to_ext else None
+
+                contract_type, fee_val, fee_note = cls._parse_tm_transfer_fee(fee_raw)
+                if "kariyer sonu" in other_norm or "futbolu birakti" in other_norm:
+                    fee_note = "Kariyer Sonu"
+
+                lt_hit = lt_by_move.get((pid, to_vid if kind == "IN" else other_vid))
+                lt_any = lt_by_pid.get(pid)
+                tr_date = (lt_hit["date"] if lt_hit and lt_hit["date"] else fallback_date)
+                portrait = lt_any["img"] if lt_any else None
+
+                dedupe_key = (
+                    pid,
+                    ("SL", from_vid) if from_vid else ("EXT", cls._norm_text(from_ext)),
+                    ("SL", to_vid) if to_vid else ("EXT", cls._norm_text(to_ext)),
+                )
+                item = {
+                    "tm_id": pid,
+                    "player_name": pname,
+                    "position": pos,
+                    "age": age,
+                    "market_value": mv,
+                    "portrait_url": portrait,
+                    "from_sl_vid": from_vid,
+                    "from_ext_name": from_ext,
+                    "from_logo": from_logo,
+                    "to_sl_vid": to_vid,
+                    "to_ext_name": to_ext,
+                    "to_logo": to_logo,
+                    "contract_type": contract_type,
+                    "transfer_fee": fee_val,
+                    "fee_note": fee_note,
+                    "transfer_date": tr_date,
+                }
+                existing = events.get(dedupe_key)
+                if not existing or (fee_val > existing["transfer_fee"] or tr_date > existing["transfer_date"]):
+                    events[dedupe_key] = item
+
+        return list(events.values())
+
+    @classmethod
+    def scrape_super_lig_transfers(cls, season: Season | None = None, pre_fetched: list[dict] | None = None):
+        """
+        Güncel Süper Lig transferlerini canlı Transfermarkt verisinden çeker,
+        tekilleştirir ve yalnızca aktif sezonu (2026/2027+) günceller; geçmiş sezonları korur.
+        """
+        if season is None:
+            season = Season.get_active_season()
+        if not season or season.start_year < 2026:
+            return list(Transfer.objects.filter(season=season)) if season else []
+
+        raw_events = pre_fetched if pre_fetched is not None else cls.fetch_live_league_transfers(season=season)
+        if not raw_events:
+            return list(Transfer.objects.filter(season=season))
+
+        vid_to_team = cls._tm_vid_to_team_map()
+        db_idx = cls._build_db_index(season)
+
+        ext_cache: dict[str, Team] = {}
+        for t in Team.objects.filter(is_super_lig=False):
+            n = cls._norm_text(t.name)
+            ext_cache[n] = t
+            ext_cache[cls._strip_club_affixes(n)] = t
+
+        resolved_rows = []
+        recent_cutoff = date(season.start_year, 8, 25)
+        for ev in raw_events:
+            from_vid = ev.get("from_sl_vid")
+            to_vid = ev.get("to_sl_vid")
+            # Test DB gibi kısmi Süper Lig kulüplü ortamlarda eksik SL kulübünü dış takım olarak açma
+            if (from_vid and from_vid not in vid_to_team) or (to_vid and to_vid not in vid_to_team):
+                continue
+
+            from_team = vid_to_team.get(from_vid) if from_vid else cls._resolve_or_create_external_team(
+                ev.get("from_ext_name", ""), logo_url=ev.get("from_logo"), ext_cache=ext_cache
+            )
+            to_team = vid_to_team.get(to_vid) if to_vid else cls._resolve_or_create_external_team(
+                ev.get("to_ext_name", ""), logo_url=ev.get("to_logo"), ext_cache=ext_cache
+            )
+            if not from_team and not to_team:
+                continue
+
+            player = cls._resolve_transfer_player(
+                pname=ev["player_name"],
+                pos=ev.get("position", "Futbolcu"),
+                age=ev.get("age"),
+                mv=ev.get("market_value", 0.0),
+                portrait_url=ev.get("portrait_url"),
+                sl_team_ids=(from_team.id if from_team else None, to_team.id if to_team else None),
+                db_idx=db_idx,
+            )
+
+            if from_team and to_team and from_team.is_super_lig and to_team.is_super_lig:
+                t_type = "DOMESTIC"
+            elif to_team and to_team.is_super_lig:
+                t_type = "INCOMING"
+            else:
+                t_type = "OUTGOING"
+
+            from_label = from_team.name if from_team else "Serbest"
+            to_label = to_team.name if to_team else "Serbest"
+            fee_val = float(ev.get("transfer_fee") or 0.0)
+            mv_val = float(ev.get("market_value") or 0.0)
+            tr_date = ev.get("transfer_date") or date(season.start_year, 7, 15)
+            is_new = bool(
+                fee_val >= 1_000_000
+                or mv_val >= 2_500_000
+                or (t_type == "DOMESTIC" and mv_val >= 800_000)
+            )
+
+            resolved_rows.append(
+                Transfer(
+                    player=player,
+                    from_team=from_team,
+                    to_team=to_team,
+                    transfer_type=t_type,
+                    contract_type=ev.get("contract_type", "FREE"),
+                    transfer_fee=Decimal(f"{fee_val:.2f}"),
+                    season=season,
+                    transfer_date=tr_date,
+                    is_new=is_new,
+                    details=f"{from_label} -> {to_label} - {ev.get('fee_note', 'Bedelsiz')}"[:255],
+                )
+            )
+
+        if not resolved_rows:
+            return list(Transfer.objects.filter(season=season))
+
+        with transaction.atomic():
+            Transfer.objects.filter(season=season).delete()
+            Transfer.objects.bulk_create(resolved_rows)
+
         return list(Transfer.objects.filter(season=season))
 
     @classmethod

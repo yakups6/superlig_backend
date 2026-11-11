@@ -473,4 +473,81 @@ class SuperLigAPITestCase(TestCase):
         self.assertEqual(bench_st.matches, 2)
         self.assertEqual(bench_st.clean_sheets, 1)
 
+    def test_transfer_sync_deduplicates_domestic_and_preserves_history(self):
+        """Canlı transfer senkronizasyonu geçmiş sezonları korur ve lig içi/dış takımları tekilleştirir"""
+        from api.integrations import TransfermarktScraper
+
+        old_season = Season.objects.create(
+            name="2025/2026",
+            start_year=2025,
+            end_year=2026,
+            start_date=date(2025, 8, 1),
+            end_date=date(2026, 6, 30),
+            is_current=False,
+        )
+        old_transfer = Transfer.objects.create(
+            player=self.osimhen,
+            from_team=self.napoli,
+            to_team=self.gs,
+            transfer_type="INCOMING",
+            contract_type="PERMANENT",
+            transfer_fee=Decimal("75000000"),
+            season=old_season,
+            transfer_date=date(2025, 8, 5),
+            is_new=False,
+        )
+
+        # Sentetik canlı veri:
+        # 1. GS -> FB lig içi transfer (DOMESTIC)
+        # 2. Yabancı kulüpten geliş (is_super_lig=False oluşturmalı)
+        pre_fetched = [
+            {
+                "tm_id": "2",
+                "player_name": "Youssef En-Nesyri",
+                "position": "Santrafor",
+                "age": 29,
+                "market_value": 15000000.0,
+                "portrait_url": None,
+                "from_sl_vid": 36,  # Fenerbahçe
+                "from_ext_name": "",
+                "from_logo": None,
+                "to_sl_vid": 141,  # Galatasaray
+                "to_ext_name": "",
+                "to_logo": None,
+                "contract_type": "PERMANENT",
+                "transfer_fee": 12000000.0,
+                "fee_note": "12.00M € Bonservis",
+                "transfer_date": date(2026, 8, 28),
+            },
+            {
+                "tm_id": "99",
+                "player_name": "Rafael Leão",
+                "position": "Sol Kanat",
+                "age": 27,
+                "market_value": 50000000.0,
+                "portrait_url": None,
+                "from_sl_vid": None,
+                "from_ext_name": "AC Milan",
+                "from_logo": None,
+                "to_sl_vid": 141,
+                "to_ext_name": "",
+                "to_logo": None,
+                "contract_type": "PERMANENT",
+                "transfer_fee": 38000000.0,
+                "fee_note": "38.00M € Bonservis",
+                "transfer_date": date(2026, 8, 29),
+            },
+        ]
+
+        synced = TransfermarktScraper.scrape_super_lig_transfers(season=self.season, pre_fetched=pre_fetched)
+        self.assertEqual(len(synced), 2)
+        self.assertTrue(Transfer.objects.filter(id=old_transfer.id, season=old_season).exists())
+        self.assertEqual(Transfer.objects.filter(season=self.season, transfer_type="DOMESTIC").count(), 1)
+        milan = Team.objects.get(name="AC Milan")
+        self.assertFalse(milan.is_super_lig)
+        # Mevcut oyuncu için oluşturulmuş yeni transfer oyuncusu pasif arşive atanmalı (aktif SL kadroyu bozmamalı)
+        leao = Player.objects.get(name="Rafael Leão")
+        self.assertFalse(leao.is_active)
+        self.assertIsNone(leao.current_team)
+
 

@@ -796,7 +796,7 @@ class TransferViewSet(viewsets.ModelViewSet):
                         Q(from_team__name__icontains=team_param)
                     )
 
-        return qs
+        return qs.order_by('-is_new', '-transfer_date', '-transfer_fee', 'id')
 
 
 @extend_schema_view(
