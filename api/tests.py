@@ -5,6 +5,7 @@ from rest_framework import status
 from django.utils import timezone
 from datetime import date
 from decimal import Decimal
+from unittest.mock import patch
 
 from .models import (
     Season, Team, LeagueStanding, Player, PlayerAttribute,
@@ -379,5 +380,97 @@ class SuperLigAPITestCase(TestCase):
 
         # Ederson + Ederson Santana de Moraes tekilleşmiş olmalı (1 kaleci)
         self.assertEqual(Player.objects.filter(current_team=self.fb, jersey_number=31).count(), 1)
+
+        # Takım piyasa değeri ve dinamik oyuncu metrikleri/reytingleri güncellenmeli
+        self.gs.refresh_from_db()
+        self.assertGreater(self.gs.market_value, Decimal("0"))
+        osimhen_st = PlayerSeasonStats.objects.get(player=self.osimhen, season=self.season, team=self.gs)
+        self.assertGreater(osimhen_st.rating, 7.5)
+        self.assertGreater(osimhen_st.shots_per_game, 0.0)
+        self.assertEqual(osimhen_st.clean_sheets, 0)
+
+    def test_stats_reconciliation_and_fixture_finalization_no_double_count(self):
+        """Maç bitiminde istatistik uzlaştırma idempotent olmalı, çift sayım ve yedek enflasyonu yapmamalı"""
+        from api.integrations import APIFootballService
+
+        bench_gk = Player.objects.create(
+            name="Günay Güvenç", current_team=self.gs, position="Kaleci", jersey_number=19, is_active=True
+        )
+        PlayerSeasonStats.objects.create(
+            player=bench_gk, season=self.season, team=self.gs,
+            matches=2, minutes=180, goals=0, assists=0, clean_sheets=1
+        )
+        LeagueStanding.objects.create(
+            season=self.season, team=self.fb, rank=2,
+            won=9, drawn=2, lost=2, goals_for=25, goals_against=12
+        )
+
+        pending_fix = Fixture.objects.create(
+            season=self.season,
+            round_name="12. Hafta",
+            round_number=12,
+            home_team=self.gs,
+            away_team=self.fb,
+            match_date=timezone.now(),
+            status="NS",
+            status_display="19:00",
+        )
+
+        # _finalize_finished_fixture_atomically aynı maçı iki kez işlese bile puan durumu/oyuncu çift sayılmamalı
+        with patch.object(APIFootballService, "fetch_espn_club_roster_stats", return_value=[]):
+            first = APIFootballService._finalize_finished_fixture_atomically(
+                pending_fix.id, 2, 0, [{"side": "home", "scorer": "Victor Osimhen", "assist": None}]
+            )
+            second = APIFootballService._finalize_finished_fixture_atomically(
+                pending_fix.id, 2, 0, [{"side": "home", "scorer": "Victor Osimhen", "assist": None}]
+            )
+        self.assertTrue(first)
+        self.assertFalse(second)
+
+        gs_standing = LeagueStanding.objects.get(season=self.season, team=self.gs)
+        self.assertEqual(gs_standing.won, 11)
+        self.assertEqual(gs_standing.played, 14)
+
+        # Kümülatif ESPN toplamları idempotent uygulanmalı; yedekte kalan oyuncuya +1 eklenmemeli
+        espn_roster = [
+            {
+                "name": "Victor Osimhen",
+                "jersey": 45,
+                "pos_abbr": "F",
+                "matches": 15,
+                "goals": 13,
+                "assists": 4,
+                "total_shots": 60,
+                "shots_on_target": 28,
+                "yellow_cards": 1,
+                "red_cards": 0,
+                "saves": 0,
+                "goals_conceded": 0,
+            },
+            {
+                "name": "Günay Güvenç",
+                "jersey": 19,
+                "pos_abbr": "G",
+                "matches": 2,
+                "goals": 0,
+                "assists": 0,
+                "total_shots": 0,
+                "shots_on_target": 0,
+                "yellow_cards": 0,
+                "red_cards": 0,
+                "saves": 5,
+                "goals_conceded": 1,
+            },
+        ]
+        APIFootballService.sync_team_espn_player_stats(self.season, self.gs, espn_entries=espn_roster)
+        APIFootballService.sync_team_espn_player_stats(self.season, self.gs, espn_entries=espn_roster)
+
+        osimhen_st = PlayerSeasonStats.objects.get(player=self.osimhen, season=self.season, team=self.gs)
+        bench_st = PlayerSeasonStats.objects.get(player=bench_gk, season=self.season, team=self.gs)
+        self.assertEqual(osimhen_st.matches, 15)
+        self.assertEqual(osimhen_st.goals, 13)
+        self.assertAlmostEqual(osimhen_st.shots_per_game, 4.0, places=2)
+        self.assertEqual(bench_st.matches, 2)
+        self.assertEqual(bench_st.clean_sheets, 1)
 
 

@@ -23,7 +23,29 @@ class APIFootballService:
     BASE_URL = "https://v3.football.api-sports.io"
     RAPIDAPI_URL = "https://api-football-v1.p.rapidapi.com/v3"
     ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/tur.1/scoreboard"
+    ESPN_ROSTER_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer/tur.1/teams/{espn_id}/roster"
     SUPER_LIG_LEAGUE_ID = 203
+
+    ESPN_CLUB_IDS = {
+        'alanyaspor': 9078,
+        'amed': 132335,
+        'besiktas': 1895,
+        'rize': 7656,
+        'erzurum': 19267,
+        'eyup': 20729,
+        'fenerbahce': 436,
+        'galatasaray': 432,
+        'gaziantep': 20070,
+        'genclerbirligi': 996,
+        'goztepe': 789,
+        'basaksehir': 7914,
+        'kasimpasa': 6870,
+        'kocaeli': 995,
+        'konya': 7648,
+        'samsun': 11429,
+        'trabzon': 997,
+        'corum': 132334,
+    }
 
     _LIVE_EVENTS_CACHE = {}
     _LIVE_CLOCK_CACHE = {}
@@ -181,13 +203,156 @@ class APIFootballService:
         return None
 
     @classmethod
+    def resolve_espn_club_id(cls, team_name):
+        norm = cls._norm_text(team_name)
+        if not norm:
+            return None
+        for kw, eid in cls.ESPN_CLUB_IDS.items():
+            if kw in norm:
+                return eid
+        return None
+
+    @classmethod
+    def fetch_espn_club_roster_stats(cls, team_or_name, session=None):
+        """ESPN tur.1/teams/{id}/roster uç noktasından kulübün kümülatif sezon oyuncu istatistiklerini çeker."""
+        if isinstance(team_or_name, int):
+            espn_id = team_or_name
+        else:
+            raw_name = getattr(team_or_name, 'name', team_or_name)
+            espn_id = cls.resolve_espn_club_id(raw_name)
+        if not espn_id:
+            return []
+        url = cls.ESPN_ROSTER_URL.format(espn_id=espn_id)
+        try:
+            http = session or requests
+            resp = http.get(url, timeout=12)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+        except Exception as exc:
+            print(f"[ESPN Roster] {team_or_name} çekilemedi: {exc}")
+            return []
+
+        entries = []
+        for ath in data.get("athletes", []) or []:
+            name = ath.get("displayName") or ath.get("fullName") or ""
+            if not name:
+                continue
+            jersey_raw = ath.get("jersey")
+            jersey = int(jersey_raw) if str(jersey_raw).isdigit() else None
+            pos_abbr = ((ath.get("position") or {}).get("abbreviation") or "").upper()
+            stat_map = {}
+            for cat in ((ath.get("statistics") or {}).get("splits") or {}).get("categories", []) or []:
+                for st in cat.get("stats", []) or []:
+                    stat_map[st.get("name")] = st.get("value", 0.0)
+            entries.append({
+                "name": name,
+                "jersey": jersey,
+                "pos_abbr": pos_abbr,
+                "matches": int(round(float(stat_map.get("appearances", 0) or 0))),
+                "goals": int(round(float(stat_map.get("totalGoals", 0) or 0))),
+                "assists": int(round(float(stat_map.get("goalAssists", 0) or 0))),
+                "total_shots": int(round(float(stat_map.get("totalShots", 0) or 0))),
+                "shots_on_target": int(round(float(stat_map.get("shotsOnTarget", 0) or 0))),
+                "yellow_cards": int(round(float(stat_map.get("yellowCards", 0) or 0))),
+                "red_cards": int(round(float(stat_map.get("redCards", 0) or 0))),
+                "saves": int(round(float(stat_map.get("saves", 0) or 0))),
+                "goals_conceded": int(round(float(stat_map.get("goalsConceded", 0) or 0))),
+            })
+        return entries
+
+    @classmethod
+    def sync_team_espn_player_stats(cls, season, team, espn_entries=None):
+        """
+        Maç bittiğinde (MS) kadrodaki oyuncuların sezon istatistiklerini ESPN'in
+        kümülatif sezon toplamlarıyla idempotent biçimde uzlaştırır.
+        Yedek bekleyen oyunculara körü körüne +1 eklemez, çift sayım yapmaz.
+        """
+        if not season or not team:
+            return 0
+        if espn_entries is None:
+            espn_entries = cls.fetch_espn_club_roster_stats(team)
+        if not espn_entries:
+            return 0
+
+        from api.integrations.transfermarkt_scraper import TransfermarktScraper
+
+        active_players = list(Player.objects.filter(current_team=team, is_active=True))
+        if not active_players:
+            return 0
+
+        existing_stats = {
+            st.player_id: st
+            for st in PlayerSeasonStats.objects.filter(season=season, team=team)
+        }
+        used_indices = set()
+        updated = 0
+
+        for player in active_players:
+            matched = TransfermarktScraper._match_espn_entry(
+                player.name, player.jersey_number, player.position, espn_entries, used_indices
+            )
+            if not matched:
+                continue
+            idx, espn = matched
+            used_indices.add(idx)
+
+            st_obj = existing_stats.get(player.id)
+            if not st_obj:
+                if espn["matches"] <= 0:
+                    continue
+                st_obj, _ = PlayerSeasonStats.objects.get_or_create(
+                    player=player,
+                    season=season,
+                    team=team,
+                    defaults={"market_value": player.market_value or 0},
+                )
+
+            st_obj.matches = max(st_obj.matches or 0, espn["matches"])
+            st_obj.goals = max(st_obj.goals or 0, espn["goals"])
+            st_obj.assists = max(st_obj.assists or 0, espn["assists"])
+            st_obj.yellow_cards = max(st_obj.yellow_cards or 0, espn["yellow_cards"])
+            st_obj.red_cards = max(st_obj.red_cards or 0, espn["red_cards"])
+
+            metrics = TransfermarktScraper.compute_season_metrics(
+                matches=st_obj.matches,
+                minutes=st_obj.minutes,
+                goals=st_obj.goals,
+                assists=st_obj.assists,
+                yellow_cards=st_obj.yellow_cards,
+                red_cards=st_obj.red_cards,
+                clean_sheets=st_obj.clean_sheets,
+                position=player.position,
+                market_value=float(player.market_value or 0),
+                total_shots=espn["total_shots"],
+                saves=espn["saves"],
+                goals_conceded=espn["goals_conceded"],
+                has_espn_shots=True,
+            )
+            st_obj.shots_per_game = metrics["shots_per_game"]
+            st_obj.pass_accuracy = metrics["pass_accuracy"]
+            st_obj.key_passes = metrics["key_passes"]
+            st_obj.key_passes_per_game = metrics["key_passes_per_game"]
+            st_obj.dribbles_per_game = metrics["dribbles_per_game"]
+            st_obj.clean_sheets = metrics["clean_sheets"]
+            st_obj.rating = metrics["rating"]
+            st_obj.save()
+            updated += 1
+
+        return updated
+
+    @classmethod
     def _finalize_finished_fixture_atomically(cls, fixture_id, h_score, a_score, goal_events):
         """
         Gerçek hayatta maç bittiğinde (ESPN state == 'post') yalnızca BİR KEZ çalışır:
         - Maçı FT (MS) olarak işaretler.
         - Ev sahibi ve deplasman takımlarının puan durumunu (O, G, B, M, AG, YG, AV, P) ve lig sıralamasını günceller.
-        - Oyuncuların maç sayılarını ve gerçek gol/asist istatistiklerini günceller.
+        - Kilit dışında ESPN kümülatif sezon toplamlarıyla oyuncu istatistiklerini idempotent günceller.
         """
+        season = None
+        home_team = None
+        away_team = None
+
         with transaction.atomic():
             fix = Fixture.objects.select_for_update().select_related('season', 'home_team', 'away_team').get(id=fixture_id)
             if fix.status == 'FT':
@@ -198,7 +363,7 @@ class APIFootballService:
                     fix.is_live = False
                     fix.status_display = 'MS'
                     fix.save(update_fields=['home_score', 'away_score', 'is_live', 'status_display'])
-                return
+                return False
 
             fix.home_score = h_score
             fix.away_score = a_score
@@ -252,34 +417,12 @@ class APIFootballService:
                     st_row.rank = idx
                     st_row.save(update_fields=['rank'])
 
-            # Aktif kadrodaki oyuncuların maç sayısını güncelle
-            PlayerSeasonStats.objects.filter(season=season, team=home_team, matches__gt=0).update(matches=F('matches') + 1)
-            PlayerSeasonStats.objects.filter(season=season, team=away_team, matches__gt=0).update(matches=F('matches') + 1)
-
-            # Gerçek golcüleri ve asist yapanları işle
-            for gev in (goal_events or []):
-                if gev.get('is_own_goal'):
-                    continue
-                scoring_team = home_team if gev.get('side') == 'home' else away_team
-                scorer_obj = cls._match_player_for_team(gev.get('scorer'), scoring_team, season)
-                if scorer_obj:
-                    st_obj, created = PlayerSeasonStats.objects.get_or_create(
-                        player=scorer_obj, season=season, team=scoring_team,
-                        defaults={'matches': 1, 'goals': 0, 'assists': 0, 'market_value': scorer_obj.market_value or 0}
-                    )
-                    st_obj.goals = (st_obj.goals or 0) + 1
-                    st_obj.save(update_fields=['goals'])
-
-                assist_name = gev.get('assist')
-                if assist_name:
-                    assist_obj = cls._match_player_for_team(assist_name, scoring_team, season)
-                    if assist_obj:
-                        ast_st, _ = PlayerSeasonStats.objects.get_or_create(
-                            player=assist_obj, season=season, team=scoring_team,
-                            defaults={'matches': 1, 'goals': 0, 'assists': 0, 'market_value': assist_obj.market_value or 0}
-                        )
-                        ast_st.assists = (ast_st.assists or 0) + 1
-                        ast_st.save(update_fields=['assists'])
+        # Kümülatif ESPN sezon toplamları ile oyuncu istatistiklerini uzlaştır (çift sayım yok)
+        if home_team:
+            cls.sync_team_espn_player_stats(season, home_team)
+        if away_team:
+            cls.sync_team_espn_player_stats(season, away_team)
+        return True
 
     @classmethod
     def sync_real_espn_live_scoreboard(cls, season=None, force=False):

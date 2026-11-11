@@ -2,6 +2,7 @@ import logging
 import re
 import time
 import unicodedata
+from decimal import Decimal
 from difflib import SequenceMatcher
 
 import requests
@@ -10,7 +11,7 @@ from django.db import transaction
 from django.db.models import Count, Max, Q
 
 from api.integrations.player_analytics import PlayerAnalyticsService
-from api.models import Player, PlayerAttribute, PlayerSeasonStats, Season, Team
+from api.models import LeagueStanding, Player, PlayerAttribute, PlayerSeasonStats, Season, Team
 
 logger = logging.getLogger(__name__)
 
@@ -182,25 +183,138 @@ class TransfermarktScraper:
         return None
 
     @classmethod
-    def discover_tm_clubs(cls, session: requests.Session, season_year: int) -> dict[str, tuple[str, int]]:
-        """Transfermarkt lig ana sayfasından ilgili sezonun kulüp ID ve slug'larını keşfeder."""
+    def _tm_vid_to_team_map(cls) -> dict[int, Team]:
+        """Veritabanındaki 18 Süper Lig takımını Transfermarkt kulüp ID'siyle eşler."""
+        vid_map: dict[int, Team] = {}
+        for team in Team.objects.filter(is_super_lig=True):
+            cfg = cls._resolve_club_source(team)
+            if cfg:
+                vid_map[int(cfg[1])] = team
+        return vid_map
+
+    @classmethod
+    def discover_tm_clubs_and_values(
+        cls, session: requests.Session, season_year: int
+    ) -> tuple[dict[str, tuple[str, int]], dict[int, float], dict[str, float]]:
+        """
+        Transfermarkt lig ana sayfasından ilgili sezonun kulüp ID, slug ve toplam piyasa
+        değerlerini tek HTTP isteğiyle keşfeder.
+        """
         url = f"{cls.BASE_URL}/super-lig/startseite/wettbewerb/TR1/saison_id/{season_year}"
         html = cls._fetch_html(session, url)
         discovered: dict[str, tuple[str, int]] = {}
+        mv_by_vid: dict[int, float] = {}
+        mv_by_norm: dict[str, float] = {}
         if not html:
-            return discovered
+            return discovered, mv_by_vid, mv_by_norm
         soup = BeautifulSoup(html, "html.parser")
         table = soup.find("table", class_="items")
-        if not table:
-            return discovered
-        for a in table.select("td.hauptlink a[href*='/verein/']"):
+        tbody = table.find("tbody") if table else None
+        if not tbody:
+            return discovered, mv_by_vid, mv_by_norm
+        for row in tbody.find_all("tr", class_=["odd", "even"]):
+            td_name = row.find("td", class_="hauptlink")
+            a = td_name.find("a", href=re.compile(r"/verein/\d+")) if td_name else None
+            if not a:
+                continue
             href = a.get("href", "")
             m = re.search(r"^/([^/]+)/startseite/verein/(\d+)", href)
             if not m:
                 continue
             slug, vid = m.group(1), int(m.group(2))
-            discovered[cls._norm_text(a.get_text(strip=True))] = (slug, vid)
+            norm_name = cls._norm_text(a.get_text(strip=True))
+            discovered[norm_name] = (slug, vid)
+            tds = row.find_all("td", recursive=False)
+            if tds:
+                club_mv = cls.parse_market_value(tds[-1].get_text(strip=True))
+                if club_mv > 0:
+                    mv_by_vid[vid] = club_mv
+                    mv_by_norm[norm_name] = club_mv
+        return discovered, mv_by_vid, mv_by_norm
+
+    @classmethod
+    def discover_tm_clubs(cls, session: requests.Session, season_year: int) -> dict[str, tuple[str, int]]:
+        """Transfermarkt lig ana sayfasından ilgili sezonun kulüp ID ve slug'larını keşfeder."""
+        discovered, _mv_vid, _mv_norm = cls.discover_tm_clubs_and_values(session, season_year)
         return discovered
+
+    @classmethod
+    def _scrape_tm_clean_sheets(cls, session: requests.Session, season_year: int) -> dict[str, dict]:
+        """Transfermarkt 'Beyaz Sayfa' tablosundan kalecilerin gol yemediği maç ve yediği golleri çeker."""
+        by_tm_id: dict[str, dict] = {}
+        by_norm: dict[str, dict] = {}
+        for page in range(1, 5):
+            url = f"{cls.BASE_URL}/super-lig/weisseweste/wettbewerb/TR1/saison_id/{season_year}/plus/1/page/{page}"
+            html = cls._fetch_html(session, url, min_len=2500)
+            if not html:
+                break
+            soup = BeautifulSoup(html, "html.parser")
+            table = soup.find("table", class_="items")
+            tbody = table.find("tbody") if table else None
+            rows = tbody.find_all("tr", class_=["odd", "even"]) if tbody else []
+            if not rows:
+                break
+            for row in rows:
+                a_tag = row.find("a", href=re.compile(r"/spieler/\d+"))
+                if not a_tag:
+                    continue
+                tm_m = re.search(r"/spieler/(\d+)", a_tag.get("href", ""))
+                tm_id = tm_m.group(1) if tm_m else None
+                name = cls._clean_display_name(a_tag.get_text(strip=True))
+                tds = [td.get_text(strip=True) for td in row.find_all("td", recursive=False)]
+                if len(tds) < 6:
+                    continue
+                entry = {
+                    "clean_sheets": cls._parse_int(tds[4]),
+                    "goals_conceded": cls._parse_int(tds[5]),
+                }
+                if tm_id and tm_id not in by_tm_id:
+                    by_tm_id[tm_id] = entry
+                norm = cls._norm_text(name)
+                if norm and norm not in by_norm:
+                    by_norm[norm] = entry
+            if len(rows) < 25:
+                break
+        return {"by_tm_id": by_tm_id, "by_norm": by_norm}
+
+    @classmethod
+    def _scrape_tm_standings(cls, session: requests.Session, season_year: int) -> list[dict]:
+        """Transfermarkt canlı puan durumu tablosunu (O, G, B, M, AG, YG, AV, P) çeker."""
+        url = f"{cls.BASE_URL}/super-lig/tabelle/wettbewerb/TR1/saison_id/{season_year}"
+        html = cls._fetch_html(session, url, min_len=3000)
+        if not html:
+            return []
+        soup = BeautifulSoup(html, "html.parser")
+        table = soup.find("table", class_="items")
+        tbody = table.find("tbody") if table else None
+        if not tbody:
+            return []
+        rows_out: list[dict] = []
+        for tr in tbody.find_all("tr"):
+            a_tag = tr.find("a", href=re.compile(r"/verein/\d+"))
+            if not a_tag:
+                continue
+            vid_m = re.search(r"/verein/(\d+)", a_tag.get("href", ""))
+            tm_vid = int(vid_m.group(1)) if vid_m else None
+            tds = [td.get_text(strip=True) for td in tr.find_all("td", recursive=False)]
+            if len(tds) < 10 or ":" not in tds[7]:
+                continue
+            gf_s, ga_s = tds[7].split(":", 1)
+            rows_out.append(
+                {
+                    "tm_vid": tm_vid,
+                    "name": a_tag.get_text(strip=True),
+                    "rank": cls._parse_int(tds[0]),
+                    "played": cls._parse_int(tds[3]),
+                    "won": cls._parse_int(tds[4]),
+                    "drawn": cls._parse_int(tds[5]),
+                    "lost": cls._parse_int(tds[6]),
+                    "goals_for": cls._parse_int(gf_s),
+                    "goals_against": cls._parse_int(ga_s),
+                    "points": cls._parse_int(tds[9]),
+                }
+            )
+        return rows_out
 
     @classmethod
     def _check_sofascore_status(cls, session: requests.Session) -> str:
@@ -618,31 +732,200 @@ class TransfermarktScraper:
         )
 
     @staticmethod
-    def _compute_baseline_rating(matches: int, goals: int, assists: int, minutes: int, existing_rating: float) -> float:
-        if existing_rating and existing_rating > 0:
-            return round(existing_rating, 2)
+    def _espn_pos_group(pos_abbr: str) -> str:
+        p = (pos_abbr or "").upper()
+        if p == "G":
+            return "GK"
+        if p == "D":
+            return "DEF"
+        if p == "F":
+            return "FWD"
+        if p == "M":
+            return "MID"
+        return ""
+
+    @classmethod
+    def _match_espn_entry(
+        cls,
+        p_name: str,
+        p_jersey: int | None,
+        p_pos: str,
+        espn_entries: list[dict],
+        used_indices: set[int] | None = None,
+    ) -> tuple[int, dict] | None:
+        """Transfermarkt/DB oyuncusunu aynı kulübün ESPN kadro listesinde tekil olarak eşler."""
+        used = used_indices if used_indices is not None else set()
+        p_norm = cls._norm_text(p_name)
+        p_trans = cls._translit_text(p_name)
+        p_nospace = p_norm.replace(" ", "")
+        p_pg = cls._pos_group(p_pos)
+        p_is_gk = p_pg == "GK"
+        p_toks = p_trans.split()
+
+        # 1. Tam normalize / transliterasyon / boşluksuz eşleşme
+        for idx, entry in enumerate(espn_entries):
+            if idx in used:
+                continue
+            e_norm = cls._norm_text(entry["name"])
+            e_trans = cls._translit_text(entry["name"])
+            e_pg = cls._espn_pos_group(entry.get("pos_abbr", ""))
+            if e_pg and (e_pg == "GK") != p_is_gk:
+                continue
+            if p_norm == e_norm or p_trans == e_trans or (p_nospace and p_nospace == e_norm.replace(" ", "")):
+                return idx, entry
+
+        # 2. Forma numarası + aynı pozisyon grubu + kısmi ad örtüşmesi
+        if p_jersey:
+            for idx, entry in enumerate(espn_entries):
+                if idx in used or entry.get("jersey") != p_jersey:
+                    continue
+                e_pg = cls._espn_pos_group(entry.get("pos_abbr", ""))
+                if e_pg and e_pg != p_pg:
+                    continue
+                e_trans = cls._translit_text(entry["name"])
+                e_toks = e_trans.split()
+                token_overlap = bool(set(p_toks) & set(e_toks))
+                ratio = SequenceMatcher(None, p_trans, e_trans).ratio()
+                if token_overlap or ratio >= 0.50:
+                    return idx, entry
+
+        # 3. Yakın soyad / modern yazım eşleşmesi
+        for idx, entry in enumerate(espn_entries):
+            if idx in used:
+                continue
+            e_pg = cls._espn_pos_group(entry.get("pos_abbr", ""))
+            if e_pg and (e_pg == "GK") != p_is_gk:
+                continue
+            e_trans = cls._translit_text(entry["name"])
+            e_toks = e_trans.split()
+            if SequenceMatcher(None, p_trans, e_trans).ratio() >= 0.85:
+                return idx, entry
+            if len(p_toks) >= 2 and len(e_toks) >= 2 and p_toks[-1] == e_toks[-1]:
+                if SequenceMatcher(None, p_toks[0], e_toks[0]).ratio() >= 0.80:
+                    return idx, entry
+        return None
+
+    @classmethod
+    def compute_season_metrics(
+        cls,
+        matches: int,
+        minutes: int,
+        goals: int,
+        assists: int,
+        yellow_cards: int = 0,
+        red_cards: int = 0,
+        clean_sheets: int = 0,
+        position: str = "",
+        market_value: float = 0.0,
+        total_shots: int = 0,
+        saves: int = 0,
+        goals_conceded: int = 0,
+        has_espn_shots: bool = False,
+    ) -> dict:
+        """
+        Gerçek maç, dakika, gol, asist, kart, kaleci temiz sayfa ve ESPN şut verisinden
+        oyuncu sezonu metriklerini ve reytingini deterministik ve tutarlı hesaplar.
+        """
+        matches = int(matches or 0)
         if matches <= 0:
-            return 0.0
-        contrib = (goals * 0.14 + assists * 0.10) / max(matches, 1)
-        min_bonus = 0.25 if minutes >= matches * 60 else 0.05
-        return round(min(8.6, 6.45 + min_bonus + contrib * 2.5), 2)
+            return {
+                "shots_per_game": 0.0,
+                "pass_accuracy": 0.0,
+                "key_passes": 0,
+                "key_passes_per_game": 0.0,
+                "dribbles_per_game": 0.0,
+                "clean_sheets": 0,
+                "rating": 0.0,
+            }
+
+        m = max(matches, 1)
+        minutes = int(minutes or 0)
+        goals = int(goals or 0)
+        assists = int(assists or 0)
+        yellow_cards = int(yellow_cards or 0)
+        red_cards = int(red_cards or 0)
+        total_shots = int(total_shots or 0)
+        saves = int(saves or 0)
+        goals_conceded = int(goals_conceded or 0)
+
+        pg = cls._pos_group(position)
+        mins_pg = (minutes / m) if minutes > 0 else 65.0
+        clean_sheets_val = int(clean_sheets or 0) if pg == "GK" else 0
+
+        if has_espn_shots:
+            shots_pg = round(max(0, total_shots) / m, 2)
+        elif pg == "GK":
+            shots_pg = 0.0
+        else:
+            pos_shot_base = 0.90 if pg == "FWD" else (0.65 if pg == "MID" else 0.35)
+            shots_pg = round(((goals * 1.45 + assists * 0.40) / m) + pos_shot_base * min(1.0, max(0.25, mins_pg / 85.0)), 2)
+
+        if pg == "GK":
+            key_passes = 0
+            key_passes_pg = 0.0
+        else:
+            base_kp = {"MID": 0.85, "FWD": 0.65, "DEF": 0.38}.get(pg, 0.65)
+            kp_est = ((assists * 3.2) / m) + base_kp * min(1.15, max(0.25, mins_pg / 82.0)) + min(0.55, shots_pg * 0.12)
+            key_passes = max(assists, int(round(kp_est * m)))
+            key_passes_pg = round(key_passes / m, 2)
+
+        base_pa = {"GK": 74.5, "DEF": 84.5, "MID": 82.5, "FWD": 75.5}.get(pg, 79.0)
+        mv_m = float(market_value or 0) / 1_000_000.0
+        pa_raw = base_pa + min(4.0, mv_m * 0.15) + (1.5 if mins_pg >= 75 else -1.5) + min(3.0, (assists / m) * 3.0)
+        pass_accuracy = round(min(92.5, max(64.0, pa_raw)), 1)
+
+        if pg == "GK":
+            dribbles_pg = 0.0
+        else:
+            base_dr = {"FWD": 0.95, "MID": 0.78, "DEF": 0.42}.get(pg, 0.70)
+            dr_raw = base_dr * min(1.1, max(0.2, mins_pg / 80.0)) + (goals * 0.25 + assists * 0.35) / m
+            dribbles_pg = round(min(3.8, max(0.1, dr_raw)), 2)
+
+        play_factor = min(1.0, mins_pg / 85.0)
+        disc_pen = (yellow_cards * 0.04 + red_cards * 0.22) / m
+        if pg == "GK":
+            cs_rate = clean_sheets_val / m
+            ga_rate = (goals_conceded / m) if goals_conceded > 0 else max(0.0, 1.3 - cs_rate)
+            save_bonus = (saves / m) * 0.08
+            rat_raw = 6.35 + play_factor * 0.35 + cs_rate * 1.15 - ga_rate * 0.22 + save_bonus - disc_pen
+        else:
+            gw, aw = (1.05, 0.70) if pg == "FWD" else ((1.20, 0.85) if pg == "MID" else (1.35, 0.95))
+            contrib = (goals * gw + assists * aw) / m
+            shot_bonus = min(0.25, shots_pg * 0.045)
+            rat_raw = 6.28 + play_factor * 0.42 + contrib * 1.10 + shot_bonus - disc_pen
+        rating = round(min(8.60, max(6.05, rat_raw)), 2)
+
+        return {
+            "shots_per_game": shots_pg,
+            "pass_accuracy": pass_accuracy,
+            "key_passes": key_passes,
+            "key_passes_per_game": key_passes_pg,
+            "dribbles_per_game": dribbles_pg,
+            "clean_sheets": clean_sheets_val,
+            "rating": rating,
+        }
 
     @classmethod
     def fetch_live_league_rosters(
         cls, teams: list[Team] | None = None, season: Season | None = None
     ) -> tuple[list[tuple[Team, list[dict]]], dict]:
-        """Transfermarkt ve Mackolik'ten 18 takımın canlı aktif kadrolarını ve istatistiklerini çeker."""
+        """Transfermarkt, Mackolik ve ESPN'den 18 takımın canlı aktif kadrolarını ve tüm sezon istatistiklerini çeker."""
         if season is None:
             season = Season.get_active_season()
         season_year = season.start_year
         target_teams = list(teams) if teams is not None else list(Team.objects.filter(is_super_lig=True).order_by("id"))
 
+        from api.integrations.api_football import APIFootballService
+
         session = cls._build_session()
         sofa_status = cls._check_sofascore_status(session)
-        discovered_tm = cls.discover_tm_clubs(session, season_year)
+        discovered_tm, mv_by_vid, mv_by_norm = cls.discover_tm_clubs_and_values(session, season_year)
+        clean_sheets_map = cls._scrape_tm_clean_sheets(session, season_year)
+        standings_rows = cls._scrape_tm_standings(session, season_year) if len(target_teams) >= 18 else []
 
         payload: list[tuple[Team, list[dict]]] = []
         skipped: list[str] = []
+        club_market_values: dict[int, float] = {}
 
         for idx, team in enumerate(target_teams):
             cfg = cls._resolve_club_source(team)
@@ -669,11 +952,77 @@ class TransfermarktScraper:
                 skipped.append(team.name)
                 continue
 
+            espn_entries = APIFootballService.fetch_espn_club_roster_stats(team, session=session)
+            used_espn: set[int] = set()
+            for pdata in merged:
+                if cls._is_goalkeeper(pdata.get("position", "")):
+                    cs_hit = clean_sheets_map["by_tm_id"].get(pdata.get("tm_id")) or clean_sheets_map["by_norm"].get(
+                        cls._norm_text(pdata["name"])
+                    )
+                    if cs_hit:
+                        pdata["clean_sheets"] = cs_hit["clean_sheets"]
+                        pdata["gk_goals_conceded"] = cs_hit["goals_conceded"]
+
+                if espn_entries:
+                    espn_match = cls._match_espn_entry(
+                        pdata["name"], pdata.get("jersey_number"), pdata.get("position", ""), espn_entries, used_espn
+                    )
+                    if espn_match:
+                        e_idx, e_val = espn_match
+                        used_espn.add(e_idx)
+                        pdata["total_shots"] = e_val["total_shots"]
+                        pdata["espn_saves"] = e_val["saves"]
+                        pdata["espn_goals_conceded"] = e_val["goals_conceded"]
+                        pdata["has_espn_shots"] = True
+                        if "espn" not in pdata.get("sources", []):
+                            pdata.setdefault("sources", []).append("espn")
+
+            club_mv = mv_by_vid.get(int(tm_id)) or mv_by_norm.get(t_norm, 0.0)
+            if club_mv > 0:
+                club_market_values[team.id] = club_mv
+
             payload.append((team, merged))
             if idx < len(target_teams) - 1:
                 time.sleep(0.8)
 
-        return payload, {"sofascore_status": sofa_status, "skipped_teams": skipped}
+        return payload, {
+            "sofascore_status": sofa_status,
+            "skipped_teams": skipped,
+            "club_market_values": club_market_values,
+            "standings_rows": standings_rows,
+        }
+
+    @classmethod
+    def _sync_live_standings_rows(cls, season: Season, standings_rows: list[dict]) -> int:
+        """Transfermarkt puan durumu tablosunu veritabanıyla eşitler."""
+        vid_to_team = cls._tm_vid_to_team_map()
+        norm_to_team = {cls._norm_text(t.name): t for t in Team.objects.filter(is_super_lig=True)}
+        updated = 0
+        for row in standings_rows:
+            team = None
+            if row.get("tm_vid") and row["tm_vid"] in vid_to_team:
+                team = vid_to_team[row["tm_vid"]]
+            if not team:
+                team = norm_to_team.get(cls._norm_text(row.get("name", "")))
+            if not team:
+                continue
+            LeagueStanding.objects.update_or_create(
+                season=season,
+                team=team,
+                defaults={
+                    "rank": row["rank"],
+                    "played": row["played"],
+                    "won": row["won"],
+                    "drawn": row["drawn"],
+                    "lost": row["lost"],
+                    "goals_for": row["goals_for"],
+                    "goals_against": row["goals_against"],
+                    "goal_difference": row["goals_for"] - row["goals_against"],
+                    "points": row["points"],
+                },
+            )
+            updated += 1
+        return updated
 
     @classmethod
     def sync_live_squads_with_diff(
@@ -709,7 +1058,12 @@ class TransfermarktScraper:
                     skipped.append(team.name)
                     continue
                 clubs_payload.append((team, merged))
-            meta_info = {"sofascore_status": "cached_input", "skipped_teams": skipped}
+            meta_info = {
+                "sofascore_status": "cached_input",
+                "skipped_teams": skipped,
+                "club_market_values": {},
+                "standings_rows": [],
+            }
         else:
             clubs_payload, meta_info = cls.fetch_live_league_rosters(teams=target_teams, season=season)
 
@@ -726,16 +1080,20 @@ class TransfermarktScraper:
             "intra_league_transfers": [],
             "detached_to_legends": 0,
             "non_sl_swept": 0,
+            "teams_mv_updated": 0,
+            "standings_synced": 0,
             **meta_info,
         }
 
         with transaction.atomic():
             active_target_by_pid: dict[int, Team] = {}
             team_live_pids: dict[int, set[int]] = {}
+            club_mv_overrides = meta_info.get("club_market_values", {})
 
             # 1. Tüm takımlar için canlı aktif kadroları yaz ve global aktif indeks çıkar
             for team, _roster in clubs_payload:
                 team_pids: set[int] = set()
+                squad_mv_sum = 0.0
                 for pdata, existing_pid in resolved[team.id]:
                     if existing_pid:
                         player = Player.objects.get(id=existing_pid)
@@ -762,6 +1120,7 @@ class TransfermarktScraper:
                     if pdata.get("image_url"):
                         player.image_url = pdata["image_url"]
                     player.save()
+                    squad_mv_sum += float(player.market_value or 0)
 
                     if prev_team_id and prev_team_id != team.id:
                         summary["intra_league_transfers"].append(
@@ -781,13 +1140,29 @@ class TransfermarktScraper:
                     stat_obj.red_cards = pdata.get("red_cards", 0)
                     stat_obj.market_value = pdata.get("market_value", player.market_value or 0.0)
                     stat_obj.transfer_note = ""
-                    stat_obj.rating = cls._compute_baseline_rating(
-                        stat_obj.matches,
-                        stat_obj.goals,
-                        stat_obj.assists,
-                        stat_obj.minutes,
-                        stat_obj.rating,
+
+                    metrics = cls.compute_season_metrics(
+                        matches=stat_obj.matches,
+                        minutes=stat_obj.minutes,
+                        goals=stat_obj.goals,
+                        assists=stat_obj.assists,
+                        yellow_cards=stat_obj.yellow_cards,
+                        red_cards=stat_obj.red_cards,
+                        clean_sheets=pdata.get("clean_sheets", 0),
+                        position=player.position,
+                        market_value=float(player.market_value or 0),
+                        total_shots=pdata.get("total_shots", 0),
+                        saves=pdata.get("espn_saves", 0),
+                        goals_conceded=pdata.get("espn_goals_conceded", pdata.get("gk_goals_conceded", 0)),
+                        has_espn_shots=bool(pdata.get("has_espn_shots", False)),
                     )
+                    stat_obj.shots_per_game = metrics["shots_per_game"]
+                    stat_obj.pass_accuracy = metrics["pass_accuracy"]
+                    stat_obj.key_passes = metrics["key_passes"]
+                    stat_obj.key_passes_per_game = metrics["key_passes_per_game"]
+                    stat_obj.dribbles_per_game = metrics["dribbles_per_game"]
+                    stat_obj.clean_sheets = metrics["clean_sheets"]
+                    stat_obj.rating = metrics["rating"]
                     stat_obj.save()
 
                     cls._ensure_player_attributes(player)
@@ -797,6 +1172,11 @@ class TransfermarktScraper:
                     summary["active_players_upserted"] += 1
 
                 team_live_pids[team.id] = team_pids
+                target_mv = club_mv_overrides.get(team.id) or squad_mv_sum
+                if target_mv > 0:
+                    team.market_value = Decimal(f"{float(target_mv):.2f}")
+                    team.save(update_fields=["market_value"])
+                    summary["teams_mv_updated"] += 1
 
             # 2. Kadro Farkı (Diff): Her kulüpten ayrılan veya lig içi transfer olan eski kayıtları temizle
             for team, _roster in clubs_payload:
@@ -835,6 +1215,12 @@ class TransfermarktScraper:
                 )
                 summary["non_sl_swept"] = swept
 
+                standings_rows = meta_info.get("standings_rows") or []
+                if pre_fetched is None and len(standings_rows) >= 18:
+                    summary["standings_synced"] = cls._sync_live_standings_rows(season, standings_rows)
+
+        summary.pop("standings_rows", None)
+        summary.pop("club_market_values", None)
         return summary
 
     @classmethod
