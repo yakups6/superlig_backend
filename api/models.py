@@ -386,3 +386,41 @@ class NotificationLog(models.Model):
 
     def __str__(self):
         return f"[{self.notification_type}] {self.title}"
+
+
+# 13. İkili Rekabet (Head-to-Head) Maç Arşivi Tablosu
+class RivalryMatch(models.Model):
+    tm_match_id = models.CharField(
+        max_length=50,
+        unique=True,
+        help_text="Transfermarkt spielbericht ID veya benzersiz maç anahtarı",
+    )
+    season_label = models.CharField(max_length=30, default='2026/2027', help_text="Örn: 2026/2027")
+    start_year = models.IntegerField(default=2026, db_index=True)
+    competition = models.CharField(max_length=80, default='Süper Lig')
+    round_label = models.CharField(max_length=60, blank=True)
+    match_date = models.DateField(null=True, blank=True, db_index=True)
+    match_date_display = models.CharField(max_length=40, blank=True)
+    match_time = models.CharField(max_length=20, blank=True)
+    home_team = models.ForeignKey(Team, related_name='rivalry_home_matches', on_delete=models.CASCADE)
+    away_team = models.ForeignKey(Team, related_name='rivalry_away_matches', on_delete=models.CASCADE)
+    home_rank = models.CharField(max_length=15, blank=True)
+    away_rank = models.CharField(max_length=15, blank=True)
+    home_score = models.IntegerField(null=True, blank=True)
+    away_score = models.IntegerField(null=True, blank=True)
+    score_note = models.CharField(max_length=20, blank=True, help_text="Örn: UZT, PEN")
+    status = models.CharField(max_length=15, default='FT', help_text="FT (Bitti) veya NS (Oynanacak)")
+    attendance = models.CharField(max_length=30, blank=True)
+
+    class Meta:
+        verbose_name = "Rekabet Maçı"
+        verbose_name_plural = "Rekabet Maçları"
+        ordering = ['-match_date', '-start_year', '-id']
+        indexes = [
+            models.Index(fields=['home_team', 'away_team']),
+            models.Index(fields=['away_team', 'home_team']),
+        ]
+
+    def __str__(self):
+        sc = f"{self.home_score}:{self.away_score}" if self.home_score is not None and self.away_score is not None else "-:-"
+        return f"[{self.season_label} {self.competition}] {self.home_team.name} {sc} {self.away_team.name}"

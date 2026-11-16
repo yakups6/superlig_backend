@@ -732,4 +732,77 @@ class SuperLigAPITestCase(TestCase):
         self.assertFalse(leao.is_active)
         self.assertIsNone(leao.current_team)
 
+    def test_team_rivalry_endpoint_returns_matches_and_summary(self):
+        """İkili rekabet (/api/rivalry/) uç noktası iki takım arasındaki tüm maçları ve özet istatistikleri döndürmeli"""
+        from api.models import RivalryMatch
+
+        RivalryMatch.objects.create(
+            tm_match_id="TM_9001",
+            season_label="2026/2027",
+            start_year=2026,
+            competition="Süper Lig",
+            round_label="9. Hafta",
+            match_date=date(2026, 10, 26),
+            match_date_display="26 Eki 2026",
+            match_time="21:30",
+            home_team=self.gs,
+            away_team=self.fb,
+            home_rank="(1.)",
+            away_rank="(3.)",
+            home_score=2,
+            away_score=1,
+            status="FT",
+        )
+        RivalryMatch.objects.create(
+            tm_match_id="TM_9002",
+            season_label="2025/2026",
+            start_year=2025,
+            competition="Türkiye Kupası",
+            round_label="Final",
+            match_date=date(2026, 5, 14),
+            match_date_display="14 May 2026",
+            match_time="20:45",
+            home_team=self.fb,
+            away_team=self.gs,
+            home_score=1,
+            away_score=1,
+            status="FT",
+        )
+        RivalryMatch.objects.create(
+            tm_match_id="TM_9003",
+            season_label="1958/1959",
+            start_year=1958,
+            competition="Süper Lig",
+            round_label="Final",
+            match_date=date(1959, 6, 14),
+            match_date_display="14 Haz 1959",
+            home_team=self.fb,
+            away_team=self.gs,
+            home_score=4,
+            away_score=0,
+            status="FT",
+        )
+
+        resp = self.client.get("/api/rivalry/", {"team1": self.gs.id, "team2": self.fb.id})
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        data = resp.json()
+        self.assertEqual(data["team1"]["id"], self.gs.id)
+        self.assertEqual(data["team2"]["id"], self.fb.id)
+        self.assertEqual(data["summary"]["total_matches"], 3)
+        self.assertEqual(data["summary"]["team1_wins"], 1)
+        self.assertEqual(data["summary"]["draws"], 1)
+        self.assertEqual(data["summary"]["team2_wins"], 1)
+        self.assertEqual(data["summary"]["team1_goals"], 3)
+        self.assertEqual(data["summary"]["team2_goals"], 6)
+        self.assertEqual(len(data["matches"]), 3)
+
+        # Turnuva filtresi (Süper Lig)
+        resp_sl = self.client.get(
+            "/api/rivalry/",
+            {"team1": self.gs.id, "team2": self.fb.id, "competition": "Süper Lig"},
+        )
+        self.assertEqual(resp_sl.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp_sl.json()["summary"]["total_matches"], 2)
+
+
 

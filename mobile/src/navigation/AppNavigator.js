@@ -13,6 +13,7 @@ import ScoutScreen from '../screens/ScoutScreen';
 import PlayersScreen from '../screens/PlayersScreen';
 import StandingsScreen from '../screens/StandingsScreen';
 import LegendsScreen from '../screens/LegendsScreen';
+import RivalryScreen from '../screens/RivalryScreen';
 import AuthScreen from '../screens/AuthScreen';
 import { COLORS } from '../theme/colors';
 
@@ -124,6 +125,7 @@ export default function AppNavigator() {
       <RootStack.Screen name="Players" component={PlayersScreen} />
       <RootStack.Screen name="Legends" component={LegendsScreen} />
       <RootStack.Screen name="Standings" component={StandingsScreen} />
+      <RootStack.Screen name="Rivalry" component={RivalryScreen} />
       <RootStack.Screen name="Auth" component={AuthScreen} />
     </RootStack.Navigator>
   );

@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import (
     Season, Team, LeagueStanding, Player, PlayerAttribute,
-    PlayerSeasonStats, Transfer, ScoutList, Fixture
+    PlayerSeasonStats, Transfer, ScoutList, Fixture, RivalryMatch
 )
 
 
@@ -71,4 +71,12 @@ class FixtureAdmin(admin.ModelAdmin):
     list_display = ('round_name', 'home_team', 'home_score', 'away_score', 'away_team', 'status_display', 'match_date', 'is_live')
     list_filter = ('season', 'round_number', 'status', 'is_live')
     search_fields = ('home_team__name', 'away_team__name', 'venue')
+
+
+@admin.register(RivalryMatch)
+class RivalryMatchAdmin(admin.ModelAdmin):
+    list_display = ('season_label', 'competition', 'round_label', 'match_date', 'home_team', 'home_score', 'away_score', 'away_team', 'status')
+    list_filter = ('competition', 'status', 'season_label')
+    search_fields = ('home_team__name', 'away_team__name', 'season_label')
+
 

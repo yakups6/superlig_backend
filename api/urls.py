@@ -4,7 +4,7 @@ from .views import (
     SeasonViewSet, TeamViewSet, PlayerViewSet,
     PlayerSeasonStatsViewSet, TransferViewSet,
     LeagueStandingViewSet, ScoutListViewSet, FixtureViewSet,
-    LeaderboardsView, PlayerComparisonView, HomeSummaryView, LegendsView,
+    LeaderboardsView, PlayerComparisonView, TeamRivalryView, HomeSummaryView, LegendsView,
     RegisterView, LoginView, CustomTokenRefreshView, UserProfileView, ChangePasswordView,
     SyncTransfersView, SyncSquadsView, SyncAttributesView,
     SyncFixturesView, SyncAllView,
@@ -38,6 +38,7 @@ urlpatterns = [
     # Özel İş Mantığı ve Analiz Endpoints
     path('leaderboards/', LeaderboardsView.as_view(), name='leaderboards'),
     path('compare/', PlayerComparisonView.as_view(), name='player-compare'),
+    path('rivalry/', TeamRivalryView.as_view(), name='team-rivalry'),
     path('home-summary/', HomeSummaryView.as_view(), name='home-summary'),
     path('legends/', LegendsView.as_view(), name='legends-list'),
 

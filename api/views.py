@@ -1288,6 +1288,65 @@ class PlayerComparisonView(APIView):
         return Response(result)
 
 
+class TeamRivalryView(APIView):
+    """
+    İki kulüp arasındaki 1959'dan günümüze oynanan tüm resmi maçları (Süper Lig, Türkiye Kupası,
+    Süper Kupa vb.) ve ikili rekabet özet istatistiklerini döner.
+    Örnek: /api/rivalry/?team1=1&team2=3&competition=ALL
+    """
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+
+    @extend_schema(
+        tags=['10. Oyuncu Karşılaştırma & Algoritmik Analiz'],
+        summary="İki Takım Arasındaki Rekabet ve Tüm Maç Geçmişi",
+        description="Seçilen iki takımın kendi aralarında oynadığı tüm maçları, galibiyet/beraberlik/gol sayılarını ve ev/deplasman analizini döner.",
+        parameters=[
+            OpenApiParameter(name='team1', type=int, required=False, description='1. Takım ID (Varsayılan: Galatasaray)'),
+            OpenApiParameter(name='team2', type=int, required=False, description='2. Takım ID (Varsayılan: Fenerbahçe)'),
+            OpenApiParameter(name='competition', type=str, required=False, description='Turnuva filtresi (ALL, Süper Lig, Türkiye Kupası, TFF Süper Kupa)'),
+            OpenApiParameter(name='refresh', type=bool, required=False, description='Canlı veriyi yeniden senkronize et (true/false)'),
+        ],
+        responses={200: OpenApiTypes.OBJECT}
+    )
+    def get(self, request):
+        from .integrations.rivalry_service import RivalryService
+
+        t1_id = request.query_params.get('team1')
+        t2_id = request.query_params.get('team2')
+        comp = request.query_params.get('competition', 'ALL')
+        force_sync = str(request.query_params.get('refresh', '')).lower() in ('true', '1')
+
+        t1 = None
+        if t1_id and str(t1_id).isdigit():
+            t1 = Team.objects.filter(id=int(t1_id)).first()
+        if not t1:
+            t1 = (
+                Team.objects.filter(name__icontains='Galatasaray').first()
+                or Team.objects.filter(is_super_lig=True).first()
+                or Team.objects.first()
+            )
+
+        t2 = None
+        if t2_id and str(t2_id).isdigit():
+            t2 = Team.objects.filter(id=int(t2_id)).first()
+        if not t2 or (t1 and t2.id == t1.id):
+            t2 = Team.objects.exclude(id=t1.id if t1 else 0).filter(name__icontains='Fenerbah').first()
+            if not t2 and t1:
+                t2 = Team.objects.exclude(id=t1.id).filter(is_super_lig=True).first()
+            if not t2 and t1:
+                t2 = Team.objects.exclude(id=t1.id).first()
+
+        if not t1 or not t2:
+            return Response(
+                {"error": "Karşılaştırılacak takımlar sistemde bulunamadı."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        data = RivalryService.get_rivalry_data(t1, t2, competition_filter=comp, force_sync=force_sync)
+        return Response(data)
+
+
 class HomeSummaryView(APIView):
     """
     1. Fotoğraftaki Ana Sayfa menüleri ve özet sayaçları

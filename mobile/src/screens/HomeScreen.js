@@ -406,15 +406,13 @@ export default function HomeScreen({ navigation }) {
 
         <TouchableOpacity
           style={styles.gridCard}
-          onPress={() => navigation.navigate('ScoutTab')}
+          onPress={() => navigation.navigate('Rivalry')}
         >
           <View style={styles.iconCircle}>
-            <Text style={styles.iconEmoji}>🔔</Text>
+            <Text style={styles.iconEmoji}>⚔️</Text>
           </View>
-          <Text style={styles.cardTitle}>Favoriler & Bildirim</Text>
-          <Text style={styles.cardDesc}>
-            {favorites.length} Oyuncu • {favoriteTeams.length} Kulüp
-          </Text>
+          <Text style={styles.cardTitle}>Rekabet</Text>
+          <Text style={styles.cardDesc}>İkili Takım & Tüm Maçlar</Text>
         </TouchableOpacity>
       </View>
     </ScrollView>

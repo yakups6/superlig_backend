@@ -282,11 +282,18 @@ export const superligApi = {
     return res.data;
   },
 
-  // 7. Compare
+  // 7. Compare & Rivalry (Rekabet)
   comparePlayers: async (player1, player2, season) => {
     const params = { player1, player2 };
     if (season) params.season = season;
     const res = await apiClient.get('/compare/', { params });
+    return res.data;
+  },
+  getRivalry: async (team1, team2, competition = 'ALL', refresh = false) => {
+    const params = { team1, team2 };
+    if (competition && competition !== 'ALL') params.competition = competition;
+    if (refresh) params.refresh = 'true';
+    const res = await apiClient.get('/rivalry/', { params });
     return res.data;
   },
 
