@@ -617,12 +617,30 @@ export default function FixturesScreen({ navigation, route }) {
                   ))}
                 </View>
               )}
-              <TouchableOpacity
-                style={styles.modalCloseBtn}
-                onPress={() => setSelectedMatch(null)}
-              >
-                <Text style={styles.modalCloseBtnText}>Tamam</Text>
-              </TouchableOpacity>
+              <View style={styles.modalActionsRow}>
+                <TouchableOpacity
+                  style={styles.modalRivalryBtn}
+                  onPress={() => {
+                    const m = selectedMatch;
+                    setSelectedMatch(null);
+                    navigation.navigate('Rivalry', {
+                      team1Id: m.home_team,
+                      team2Id: m.away_team,
+                      team1Name: m.home_team_name,
+                      team2Name: m.away_team_name,
+                      ts: Date.now(),
+                    });
+                  }}
+                >
+                  <Text style={styles.modalRivalryBtnText}>⚔️ Rekabet</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalCloseBtn, { flex: 1, marginTop: 0 }]}
+                  onPress={() => setSelectedMatch(null)}
+                >
+                  <Text style={styles.modalCloseBtnText}>Tamam</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           )}
         </TouchableOpacity>
@@ -957,6 +975,27 @@ const styles = StyleSheet.create({
     borderTopColor: COLORS.cardBorder,
   },
   matchModalEvTitle: { color: COLORS.white, fontSize: 12, fontWeight: '800', marginBottom: 4 },
+  modalActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 14,
+  },
+  modalRivalryBtn: {
+    flex: 1,
+    backgroundColor: 'rgba(245,158,11,0.16)',
+    borderWidth: 1,
+    borderColor: COLORS.accentGold,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalRivalryBtnText: {
+    color: COLORS.accentGold,
+    fontSize: 13,
+    fontWeight: '900',
+  },
   modalCloseBtn: {
     backgroundColor: COLORS.accentRed,
     borderRadius: 10,

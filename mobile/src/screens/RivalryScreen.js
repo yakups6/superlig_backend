@@ -99,8 +99,20 @@ export default function RivalryScreen({ navigation, route }) {
         if (combined.length >= 2) {
           const gs = combined.find((t) => t.name?.includes('Galatasaray'));
           const fb = combined.find((t) => t.name?.includes('Fenerbahçe'));
-          const init1 = route?.params?.team1Id || t1Id || gs?.id || combined[0].id;
-          let init2 = route?.params?.team2Id || t2Id || fb?.id || combined[1].id;
+          const byName1 =
+            route?.params?.team1Name &&
+            combined.find(
+              (t) => t.name?.toLowerCase() === String(route.params.team1Name).toLowerCase()
+            );
+          const byName2 =
+            route?.params?.team2Name &&
+            combined.find(
+              (t) => t.name?.toLowerCase() === String(route.params.team2Name).toLowerCase()
+            );
+          const init1 =
+            route?.params?.team1Id || byName1?.id || t1Id || gs?.id || combined[0].id;
+          let init2 =
+            route?.params?.team2Id || byName2?.id || t2Id || fb?.id || combined[1].id;
           if (String(init1) === String(init2)) {
             init2 = combined.find((t) => String(t.id) !== String(init1))?.id || combined[1].id;
           }
@@ -120,6 +132,35 @@ export default function RivalryScreen({ navigation, route }) {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const p1 = route?.params?.team1Id;
+    const p2 = route?.params?.team2Id;
+    const n1 = route?.params?.team1Name;
+    const n2 = route?.params?.team2Name;
+    if (!p1 && !p2 && !n1 && !n2) return;
+
+    let resolved1 = p1;
+    let resolved2 = p2;
+    if (!resolved1 && n1 && teams.length > 0) {
+      resolved1 = teams.find((t) => t.name?.toLowerCase() === String(n1).toLowerCase())?.id;
+    }
+    if (!resolved2 && n2 && teams.length > 0) {
+      resolved2 = teams.find((t) => t.name?.toLowerCase() === String(n2).toLowerCase())?.id;
+    }
+    if (resolved1 && resolved2 && String(resolved1) !== String(resolved2)) {
+      setT1Id(resolved1);
+      setT2Id(resolved2);
+      setCompetition('ALL');
+      loadRivalry(resolved1, resolved2, 'ALL', false);
+    }
+  }, [
+    route?.params?.team1Id,
+    route?.params?.team2Id,
+    route?.params?.team1Name,
+    route?.params?.team2Name,
+    route?.params?.ts,
+  ]);
 
   const handleSwapTeams = () => {
     if (!t1Id || !t2Id) return;
@@ -1145,3 +1186,4 @@ const styles = StyleSheet.create({
   modalTeamSub: { color: COLORS.textDim, fontSize: 10, marginTop: 1 },
   selectedCheck: { color: COLORS.accentGreen, fontSize: 16, fontWeight: '900' },
 });
+
