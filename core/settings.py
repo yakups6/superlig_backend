@@ -4,6 +4,7 @@ Süper Lig Analiz API
 """
 
 import os
+import sys
 from pathlib import Path
 from django.core.management.utils import get_random_secret_key
 from dotenv import load_dotenv
@@ -54,6 +55,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'django.middleware.gzip.GZipMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -125,6 +127,17 @@ else:
             'PORT': DB_PORT,
         }
     }
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'superlig-api-cache',
+        'OPTIONS': {
+            'MAX_ENTRIES': 500,
+        },
+    }
+}
+API_CACHE_ENABLED = ('test' not in sys.argv)
 
 
 # Password validation

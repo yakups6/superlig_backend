@@ -660,6 +660,8 @@ class APIFootballService:
                 opp_conceded=h_score,
                 team_played=away_played,
             )
+        from django.core.cache import cache
+        cache.clear()
         return True
 
     @classmethod

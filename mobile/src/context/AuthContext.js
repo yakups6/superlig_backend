@@ -201,10 +201,11 @@ export function AuthProvider({ children }) {
     }
   }, []);
 
-  // Başlangıç yüklemeleri
+  // Başlangıç yüklemeleri (yerel önbellekten anında aç, ağ isteklerini paralel arka planda çalıştır)
   useEffect(() => {
     let isMounted = true;
     async function init() {
+      let hasToken = false;
       try {
         const creds = await initApiClientFromStorage();
         if (creds.baseUrl) setApiBaseUrl(creds.baseUrl);
@@ -214,6 +215,7 @@ export function AuthProvider({ children }) {
         });
 
         if (creds.access) {
+          hasToken = true;
           setAccessToken(creds.access);
           const cachedUser = await AsyncStorage.getItem(STORAGE_KEYS.USER);
           if (cachedUser) {
@@ -221,40 +223,45 @@ export function AuthProvider({ children }) {
               setUser(JSON.parse(cachedUser));
             } catch (e) {}
           }
-          try {
-            const me = await superligApi.getMe();
-            setUser(me);
-            await AsyncStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(me));
-            await refreshFavorites(true);
-            await refreshFavoriteTeams(true);
-          } catch (err) {
-            if (err?.response?.status === 401) {
-              await clearSession();
-            } else {
-              await refreshFavorites(true);
-              await refreshFavoriteTeams(true);
-            }
-          }
         } else {
-          await refreshFavorites(false);
-          await refreshFavoriteTeams(false);
+          await Promise.allSettled([refreshFavorites(false), refreshFavoriteTeams(false)]);
         }
       } catch (e) {
-        await refreshFavorites(false);
-        await refreshFavoriteTeams(false);
+        await Promise.allSettled([refreshFavorites(false), refreshFavoriteTeams(false)]);
       } finally {
         if (isMounted) setAuthReady(true);
       }
 
-      await loadSeasons();
-      await refreshUnreadCount();
+      const bgTasks = [
+        loadSeasons(),
+        refreshUnreadCount(),
+        superligApi.getTeams({ scope: 'rivalry' }).catch(() => null),
+        registerForPushNotificationsAsync().catch((e) => {
+          console.log('[AuthContext] Push token init error:', e);
+        }),
+      ];
 
-      // Push bildirim token'ını al ve sunucuya bildir
-      try {
-        await registerForPushNotificationsAsync();
-      } catch (e) {
-        console.log('[AuthContext] Push token init error:', e);
+      if (hasToken) {
+        bgTasks.push(
+          superligApi
+            .getProfile()
+            .then(async (me) => {
+              if (me) {
+                setUser(me);
+                await AsyncStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(me));
+              }
+            })
+            .catch(async (err) => {
+              if (err?.response?.status === 401) {
+                await clearSession();
+              }
+            }),
+          refreshFavorites(true),
+          refreshFavoriteTeams(true)
+        );
       }
+
+      await Promise.allSettled(bgTasks);
     }
 
     init();

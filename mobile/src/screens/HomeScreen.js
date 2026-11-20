@@ -27,11 +27,11 @@ export default function HomeScreen({ navigation }) {
   const [apiErrorMsg, setApiErrorMsg] = useState('');
   const [nowMs, setNowMs] = useState(Date.now());
 
-  const loadData = useCallback(async (isRetry = false) => {
+  const loadData = useCallback(async (isRetry = false, forceRefresh = false) => {
     try {
       const [sumRes, liveRes] = await Promise.allSettled([
-        superligApi.getHomeSummary(),
-        superligApi.getLiveSummary(),
+        superligApi.getHomeSummary(forceRefresh),
+        superligApi.getLiveSummary(forceRefresh ? { force: 1 } : {}),
       ]);
       if (sumRes.status === 'fulfilled' && sumRes.value) {
         setSummary(sumRes.value);
@@ -39,7 +39,7 @@ export default function HomeScreen({ navigation }) {
       } else if (sumRes.status === 'rejected') {
         if (!isRetry) {
           // Açılış anındaki geçici gecikmeyi engellemek için sessizce 1 sn sonra tekrar dene
-          setTimeout(() => loadData(true), 1200);
+          setTimeout(() => loadData(true, forceRefresh), 1200);
           return;
         }
         setApiErrorMsg(sumRes.reason?.message || 'Sunucuya ulaşılamadı');
@@ -61,12 +61,14 @@ export default function HomeScreen({ navigation }) {
     }
   }, []);
 
+  const hasLiveMatches = (tickerData?.live_fixtures?.length || 0) > 0;
+
   useEffect(() => {
     if (!isFocused || !authReady) return;
-    loadData();
-    const poll = setInterval(loadData, 8000);
+    loadData(false, false);
+    const poll = setInterval(() => loadData(false, false), hasLiveMatches ? 8000 : 25000);
     return () => clearInterval(poll);
-  }, [isFocused, authReady, loadData]);
+  }, [isFocused, authReady, hasLiveMatches, loadData]);
 
   useEffect(() => {
     if (!isFocused) return;
@@ -76,7 +78,7 @@ export default function HomeScreen({ navigation }) {
 
   const onRefresh = () => {
     setRefreshing(true);
-    loadData();
+    loadData(false, true);
   };
 
   if (loading && !summary) {

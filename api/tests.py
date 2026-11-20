@@ -864,6 +864,39 @@ class SuperLigAPITestCase(TestCase):
         res_notif = self.client.post('/api/notifications/test-event/', {"type": "GOAL"})
         self.assertEqual(res_notif.status_code, status.HTTP_200_OK)
 
+    def test_performance_endpoints_health_legends_and_rivalry_scope(self):
+        """Sağlık kontrolü (/api/health/), optimize efsane listesi (/api/legends/) ve scope=rivalry filtresi doğrulanmalı"""
+        health = self.client.get('/api/health/')
+        self.assertEqual(health.status_code, status.HTTP_200_OK)
+        self.assertEqual(health.json().get('status'), 'ok')
+
+        legend = Player.objects.create(
+            name="Alex de Souza", current_team=None, position="On Numara",
+            market_value=Decimal("0"), is_active=False, is_legend=True
+        )
+        old_s = Season.objects.create(
+            name="2010/2011", start_year=2010, end_year=2011,
+            start_date=date(2010, 8, 1), end_date=date(2011, 6, 30), is_current=False
+        )
+        PlayerSeasonStats.objects.create(
+            player=legend, season=old_s, team=self.fb,
+            matches=33, goals=28, assists=16, rating=8.9
+        )
+
+        leg_resp = self.client.get('/api/legends/')
+        self.assertEqual(leg_resp.status_code, status.HTTP_200_OK)
+        leg_rows = leg_resp.json()
+        self.assertTrue(any(r['name'] == 'Alex de Souza' and r['team_id'] == self.fb.id for r in leg_rows))
+
+        # scope=rivalry harici yabancı kulübü (SSC Napoli) döndürmemeli
+        teams_resp = self.client.get('/api/teams/', {'scope': 'rivalry'})
+        self.assertEqual(teams_resp.status_code, status.HTTP_200_OK)
+        team_names = {t['name'] for t in teams_resp.json()}
+        self.assertIn('Galatasaray', team_names)
+        self.assertIn('Fenerbahçe', team_names)
+        self.assertNotIn('SSC Napoli', team_names)
+
+
 
 
 

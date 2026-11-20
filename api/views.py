@@ -1,4 +1,8 @@
 from decimal import Decimal
+import hashlib
+import threading
+from django.conf import settings
+from django.core.cache import cache
 from django.shortcuts import render
 from rest_framework import viewsets, filters, status, permissions
 from rest_framework.views import APIView
@@ -9,6 +13,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.db.models import Q, Sum, Count, Max, F
+from django.db.models.functions import Coalesce
 from collections import Counter
 from drf_spectacular.utils import (
     extend_schema, extend_schema_view, OpenApiParameter, OpenApiTypes
@@ -36,6 +41,30 @@ from .permissions import IsAdminOrReadOnly
 from .integrations import (
     TransfermarktScraper, PlayerAnalyticsService, APIFootballService
 )
+
+
+def _cached_response(prefix, request, ttl, builder):
+    """Genel okuma uç noktaları için RAM önbelleği (test modunda otomatik devre dışı)."""
+    if not getattr(settings, 'API_CACHE_ENABLED', True):
+        return builder()
+    raw_url = request.get_full_path()
+    key = f"api_{prefix}_{hashlib.md5(raw_url.encode('utf-8')).hexdigest()}"
+    cached = cache.get(key)
+    if cached is not None:
+        return Response(cached)
+    resp = builder()
+    if getattr(resp, 'status_code', 500) == 200:
+        cache.set(key, resp.data, ttl)
+    return resp
+
+
+class HealthCheckView(APIView):
+    """Render keep-alive ve sağlık kontrolü için sorgusuz hafif uç nokta."""
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        return Response({"status": "ok"}, status=status.HTTP_200_OK)
 from .notifications import (
     dispatch_match_goal_notification, dispatch_lineup_notification, send_expo_push_notification
 )
@@ -213,6 +242,9 @@ class SeasonViewSet(viewsets.ModelViewSet):
     serializer_class = SeasonSerializer
     permission_classes = [IsAdminOrReadOnly]
 
+    def list(self, request, *args, **kwargs):
+        return _cached_response('seasons', request, 300, lambda: super(SeasonViewSet, self).list(request, *args, **kwargs))
+
     @extend_schema(
         tags=['2. Sezonlar'],
         summary="Aktif / Güncel Sezon Bilgisi",
@@ -235,6 +267,7 @@ class SeasonViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='auto-switch', permission_classes=[permissions.IsAdminUser])
     def auto_switch(self, request):
         active_season = Season.get_active_season()
+        cache.clear()
         return Response({
             "message": f"Aktif sezon başarıyla güncellendi: {active_season.name}",
             "current_season": SeasonSerializer(active_season).data
@@ -272,10 +305,17 @@ class TeamViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = Team.objects.all()
+        scope = self.request.query_params.get('scope')
+        if scope in ('rivalry', 'clubs'):
+            standing_ids = LeagueStanding.objects.values_list('team_id', flat=True).distinct()
+            qs = qs.filter(Q(is_super_lig=True) | Q(id__in=standing_ids))
         is_super_lig = self.request.query_params.get('is_super_lig')
         if is_super_lig is not None:
             qs = qs.filter(is_super_lig=(is_super_lig.lower() in ['true', '1']))
         return qs
+
+    def list(self, request, *args, **kwargs):
+        return _cached_response('teams', request, 300, lambda: super(TeamViewSet, self).list(request, *args, **kwargs))
 
 
 @extend_schema_view(
@@ -338,9 +378,12 @@ class PlayerViewSet(viewsets.ModelViewSet):
         return qs.order_by('-market_value', 'name')
 
     def list(self, request, *args, **kwargs):
+        return _cached_response('players', request, 180, lambda: self._build_player_list(request, *args, **kwargs))
+
+    def _build_player_list(self, request, *args, **kwargs):
         season_param = request.query_params.get('season')
         if not season_param:
-            return super().list(request, *args, **kwargs)
+            return super(PlayerViewSet, self).list(request, *args, **kwargs)
 
         season = Season.objects.filter(name=season_param).first()
         if not season and str(season_param).isdigit():
@@ -484,6 +527,9 @@ class LegendsView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
+        return _cached_response('legends', request, 300, lambda: self._build_legends_response(request))
+
+    def _build_legends_response(self, request):
         season_param = request.query_params.get('season')
         team_param = request.query_params.get('team')
         position_param = request.query_params.get('position')
@@ -595,14 +641,14 @@ class LegendsView(APIView):
 
             return Response(data)
 
-        # 2. ALL SEASONS / ALL-TIME LEGENDS
+        # 2. ALL SEASONS / ALL-TIME LEGENDS (SQL düzeyinde sıralama + tek sorguda baskın kulüp)
         legends_qs = Player.objects.filter(is_legend=True).annotate(
-            total_matches=Sum('season_stats__matches'),
-            total_goals=Sum('season_stats__goals'),
-            total_assists=Sum('season_stats__assists'),
+            total_matches=Coalesce(Sum('season_stats__matches'), 0),
+            total_goals=Coalesce(Sum('season_stats__goals'), 0),
+            total_assists=Coalesce(Sum('season_stats__assists'), 0),
             best_rating=Max('season_stats__rating'),
             seasons_count=Count('season_stats__season', distinct=True)
-        ).prefetch_related('season_stats__team')
+        ).select_related('current_team')
 
         if position_param and position_param != 'ALL':
             pos_up = position_param.upper()
@@ -636,26 +682,31 @@ class LegendsView(APIView):
                 Q(nationality__icontains=search_query)
             )
 
-        sorted_legends = sorted(
-            legends_qs,
-            key=lambda x: (
-                x.total_goals or 0,
-                x.total_matches or 0,
-                x.seasons_count or 0,
-                float(x.best_rating or 8.0)
-            ),
-            reverse=True
+        top_legends = list(
+            legends_qs.order_by(
+                '-total_goals', '-total_matches', '-seasons_count', '-best_rating', 'id'
+            )[:150]
         )
+        top_ids = [p.id for p in top_legends]
+        team_counts_rows = (
+            PlayerSeasonStats.objects.filter(player_id__in=top_ids, team__isnull=False)
+            .values('player_id', 'team_id')
+            .annotate(cnt=Count('id'))
+            .order_by('-cnt', 'team_id')
+        )
+        prominent_team_id_by_player = {}
+        for row in team_counts_rows:
+            prominent_team_id_by_player.setdefault(row['player_id'], row['team_id'])
+
+        needed_team_ids = set(prominent_team_id_by_player.values()) | {
+            p.current_team_id for p in top_legends if p.current_team_id
+        }
+        teams_by_id = Team.objects.in_bulk(needed_team_ids)
 
         data = []
-        for p in sorted_legends[:150]:
-            prominent_team = None
-            if p.season_stats.exists():
-                team_counts = Counter(st.team for st in p.season_stats.all() if st.team)
-                if team_counts:
-                    prominent_team = team_counts.most_common(1)[0][0]
-            if not prominent_team:
-                prominent_team = p.current_team
+        for p in top_legends:
+            p_team_id = prominent_team_id_by_player.get(p.id) or p.current_team_id
+            prominent_team = teams_by_id.get(p_team_id) if p_team_id else None
 
             data.append({
                 'id': p.id,
@@ -760,6 +811,9 @@ class TransferViewSet(viewsets.ModelViewSet):
     filter_backends = [filters.SearchFilter]
     search_fields = ['player__name', 'from_team__name', 'to_team__name', 'details']
 
+    def list(self, request, *args, **kwargs):
+        return _cached_response('transfers', request, 180, lambda: super(TransferViewSet, self).list(request, *args, **kwargs))
+
     def get_queryset(self):
         qs = super().get_queryset()
         transfer_type = self.request.query_params.get('type')
@@ -824,6 +878,9 @@ class LeagueStandingViewSet(viewsets.ModelViewSet):
     queryset = LeagueStanding.objects.select_related('team', 'season').order_by('rank', '-points', '-goal_difference')
     serializer_class = LeagueStandingSerializer
     permission_classes = [IsAdminOrReadOnly]
+
+    def list(self, request, *args, **kwargs):
+        return _cached_response('standings', request, 30, lambda: super(LeagueStandingViewSet, self).list(request, *args, **kwargs))
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -1185,6 +1242,9 @@ class LeaderboardsView(APIView):
         responses={200: OpenApiTypes.OBJECT}
     )
     def get(self, request):
+        return _cached_response('leaderboards', request, 60, lambda: self._build_leaderboards(request))
+
+    def _build_leaderboards(self, request):
         season_id = request.query_params.get('season')
         if not season_id:
             active_season = Season.get_active_season()
@@ -1359,8 +1419,16 @@ class TeamRivalryView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        data = RivalryService.get_rivalry_data(t1, t2, competition_filter=comp, force_sync=force_sync)
-        return Response(data)
+        if force_sync:
+            data = RivalryService.get_rivalry_data(t1, t2, competition_filter=comp, force_sync=True)
+            return Response(data)
+
+        return _cached_response(
+            'rivalry',
+            request,
+            300,
+            lambda: Response(RivalryService.get_rivalry_data(t1, t2, competition_filter=comp, force_sync=False)),
+        )
 
 
 class HomeSummaryView(APIView):
@@ -1377,6 +1445,9 @@ class HomeSummaryView(APIView):
         responses={200: OpenApiTypes.OBJECT}
     )
     def get(self, request):
+        return _cached_response('home_summary', request, 30, self._build_home_summary)
+
+    def _build_home_summary(self):
         current_season = Season.get_active_season()
         super_lig_teams = Team.objects.filter(is_super_lig=True)
         active_players_count = Player.objects.filter(is_active=True, is_legend=False).count()
@@ -1704,7 +1775,16 @@ class FixtureViewSet(viewsets.ModelViewSet):
             season = Season.get_active_season() or Season.objects.first()
 
         force_sync = request.query_params.get('force') in ('1', 'true')
-        synced_live = APIFootballService.sync_real_espn_live_scoreboard(season, force=force_sync)
+        if force_sync:
+            synced_live = APIFootballService.sync_real_espn_live_scoreboard(season, force=True)
+        else:
+            synced_live = False
+            if getattr(settings, 'API_CACHE_ENABLED', True) and season:
+                threading.Thread(
+                    target=APIFootballService.sync_real_espn_live_scoreboard,
+                    args=(season, False),
+                    daemon=True,
+                ).start()
 
         qs = Fixture.objects.filter(season=season).select_related('home_team', 'away_team')
         if not synced_live:
@@ -1786,6 +1866,7 @@ class SyncTransfersView(APIView):
     )
     def post(self, request):
         transfers = TransfermarktScraper.scrape_super_lig_transfers()
+        cache.clear()
         return Response({
             "status": "success",
             "message": f"Transfermarkt üzerinden {len(transfers)} transfer başarıyla senkronize edildi.",
@@ -1818,6 +1899,7 @@ class SyncSquadsView(APIView):
             if not team:
                 return Response({"error": "Takım bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
             players = TransfermarktScraper.scrape_team_squad(team)
+            cache.clear()
             return Response({
                 "status": "success",
                 "message": f"{team.name} için {len(players)} aktif oyuncu kadrosu güncellendi.",
@@ -1827,6 +1909,7 @@ class SyncSquadsView(APIView):
             }, status=status.HTTP_200_OK)
 
         summary = TransfermarktScraper.sync_live_squads_with_diff()
+        cache.clear()
         total_players = summary.get('active_players_upserted', 0)
         return Response({
             "status": "success",
@@ -1853,6 +1936,7 @@ class SyncAttributesView(APIView):
     )
     def post(self, request):
         count = PlayerAnalyticsService.sync_all_players_attributes()
+        cache.clear()
         return Response({
             "status": "success",
             "message": f"SofaScore ve WhoScored analitiği ile {count} oyuncunun radar ve yetenek özellikleri güncellendi.",
@@ -1877,6 +1961,7 @@ class SyncFixturesView(APIView):
     )
     def post(self, request):
         fixtures = APIFootballService.fetch_and_sync_fixtures()
+        cache.clear()
         return Response({
             "status": "success",
             "message": f"API-Football (RapidAPI) üzerinden {len(fixtures)} maç fikstürü senkronize edildi.",
@@ -1905,6 +1990,7 @@ class SyncAllView(APIView):
         transfers = TransfermarktScraper.scrape_super_lig_transfers()
         attr_count = PlayerAnalyticsService.sync_all_players_attributes()
         fixtures = APIFootballService.fetch_and_sync_fixtures()
+        cache.clear()
 
         return Response({
             "status": "success",

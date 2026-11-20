@@ -55,12 +55,106 @@ ensureStorageInitialized();
 
 const apiClient = axios.create({
   baseURL: activeBaseUrl,
-  timeout: 12000,
+  timeout: 25000,
   headers: {
     'Content-Type': 'application/json',
     Accept: 'application/json',
   },
 });
+
+const CACHE_STORAGE_PREFIX = 'sl_cache_v1_';
+const memoryCache = new Map();
+const inFlightRequests = new Map();
+
+function buildCacheKey(url, params = {}) {
+  const cleanParams = {};
+  Object.keys(params || {})
+    .sort()
+    .forEach((k) => {
+      if (k !== '_t' && params[k] !== undefined && params[k] !== null && params[k] !== '') {
+        cleanParams[k] = params[k];
+      }
+    });
+  return `${activeBaseUrl}|${url}|${JSON.stringify(cleanParams)}`;
+}
+
+export async function clearApiCache() {
+  memoryCache.clear();
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    const cacheKeys = keys.filter((k) => k.startsWith(CACHE_STORAGE_PREFIX));
+    if (cacheKeys.length > 0) {
+      await AsyncStorage.multiRemove(cacheKeys);
+    }
+  } catch (e) {}
+}
+
+async function cachedGet(url, params = {}, options = {}) {
+  const { ttlMs = 120000, persist = false, skipCache = false, headers } = options;
+  const key = buildCacheKey(url, params);
+  const now = Date.now();
+
+  if (!skipCache) {
+    const mem = memoryCache.get(key);
+    if (mem && now - mem.ts < ttlMs) {
+      return mem.data;
+    }
+    if (!mem && persist) {
+      try {
+        const raw = await AsyncStorage.getItem(CACHE_STORAGE_PREFIX + key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed.ts === 'number') {
+            memoryCache.set(key, parsed);
+            if (now - parsed.ts < Math.max(ttlMs, 1800000)) {
+              if (now - parsed.ts >= ttlMs && !inFlightRequests.has(key)) {
+                const bgReq = apiClient
+                  .get(url, { params, headers })
+                  .then(async (res) => {
+                    const entry = { data: res.data, ts: Date.now() };
+                    memoryCache.set(key, entry);
+                    try {
+                      await AsyncStorage.setItem(CACHE_STORAGE_PREFIX + key, JSON.stringify(entry));
+                    } catch (e) {}
+                    return res.data;
+                  })
+                  .catch(() => parsed.data)
+                  .finally(() => inFlightRequests.delete(key));
+                inFlightRequests.set(key, bgReq);
+              }
+              return parsed.data;
+            }
+          }
+        }
+      } catch (e) {}
+    }
+  }
+
+  if (!skipCache && inFlightRequests.has(key)) {
+    return inFlightRequests.get(key);
+  }
+
+  const reqPromise = apiClient
+    .get(url, { params, headers })
+    .then(async (res) => {
+      const entry = { data: res.data, ts: Date.now() };
+      memoryCache.set(key, entry);
+      if (persist) {
+        try {
+          await AsyncStorage.setItem(CACHE_STORAGE_PREFIX + key, JSON.stringify(entry));
+        } catch (e) {}
+      }
+      return res.data;
+    })
+    .finally(() => {
+      inFlightRequests.delete(key);
+    });
+
+  if (!skipCache) {
+    inFlightRequests.set(key, reqPromise);
+  }
+  return reqPromise;
+}
 
 export function setUnauthorizedHandler(fn) {
   unauthorizedHandler = fn;
@@ -223,90 +317,127 @@ export const superligApi = {
   },
 
   // 2. Home & Seasons
-  getHomeSummary: async () => {
-    const res = await apiClient.get('/home-summary/');
-    return res.data;
+  getHomeSummary: async (forceRefresh = false) => {
+    return cachedGet('/home-summary/', {}, {
+      ttlMs: 30000,
+      persist: true,
+      skipCache: forceRefresh,
+    });
   },
-  getSeasons: async () => {
-    const res = await apiClient.get('/seasons/');
-    return res.data;
+  getSeasons: async (forceRefresh = false) => {
+    return cachedGet('/seasons/', {}, {
+      ttlMs: 600000,
+      persist: true,
+      skipCache: forceRefresh,
+    });
   },
-  getCurrentSeason: async () => {
-    const res = await apiClient.get('/seasons/current/');
-    return res.data;
+  getCurrentSeason: async (forceRefresh = false) => {
+    return cachedGet('/seasons/current/', {}, {
+      ttlMs: 300000,
+      persist: true,
+      skipCache: forceRefresh,
+    });
   },
 
   // 3. Fixtures & Live Scores (Maçkolik)
   getLiveSummary: async (params = {}) => {
-    const res = await apiClient.get('/fixtures/live_summary/', {
-      params: { ...params, _t: Date.now() },
-      headers: { 'Cache-Control': 'no-cache' },
-    });
-    return res.data;
+    const isForce = Boolean(params?.force);
+    return cachedGet(
+      '/fixtures/live_summary/',
+      isForce ? { ...params, _t: Date.now() } : params,
+      {
+        ttlMs: 4000,
+        skipCache: isForce,
+        headers: { 'Cache-Control': 'no-cache' },
+      }
+    );
   },
-  getFixtures: async (params = {}) => {
-    const res = await apiClient.get('/fixtures/', {
-      params: { ...params, _t: Date.now() },
+  getFixtures: async (params = {}, forceRefresh = false) => {
+    return cachedGet('/fixtures/', params, {
+      ttlMs: 60000,
+      skipCache: forceRefresh,
     });
-    return res.data;
   },
 
   // 4. Teams
-  getTeams: async (params = {}) => {
-    const res = await apiClient.get('/teams/', { params });
-    return res.data;
+  getTeams: async (params = {}, forceRefresh = false) => {
+    const persist = !params.search;
+    return cachedGet('/teams/', params, {
+      ttlMs: 600000,
+      persist,
+      skipCache: forceRefresh,
+    });
   },
-  getTeamDetail: async (teamId, season) => {
+  getTeamDetail: async (teamId, season, forceRefresh = false) => {
     const params = season ? { season } : {};
-    const res = await apiClient.get(`/teams/${teamId}/`, { params });
-    return res.data;
+    return cachedGet(`/teams/${teamId}/`, params, {
+      ttlMs: 180000,
+      skipCache: forceRefresh,
+    });
   },
 
   // 5. Players & Legends
-  getPlayers: async (params = {}) => {
-    const res = await apiClient.get('/players/', { params });
-    return res.data;
+  getPlayers: async (params = {}, forceRefresh = false) => {
+    const persist = !params.search && !params.team && (!params.season || params.season === '2026/2027');
+    return cachedGet('/players/', params, {
+      ttlMs: 300000,
+      persist,
+      skipCache: forceRefresh,
+    });
   },
   getPlayerDetail: async (playerId) => {
-    const res = await apiClient.get(`/players/${playerId}/`);
-    return res.data;
+    return cachedGet(`/players/${playerId}/`, {}, { ttlMs: 180000 });
   },
-  getLegends: async (params = {}) => {
-    const res = await apiClient.get('/legends/', { params });
-    return res.data;
+  getLegends: async (params = {}, forceRefresh = false) => {
+    const persist = !params.search;
+    return cachedGet('/legends/', params, {
+      ttlMs: 300000,
+      persist,
+      skipCache: forceRefresh,
+    });
   },
 
   // 6. Transfers
-  getTransfers: async (params = {}) => {
-    const res = await apiClient.get('/transfers/', { params });
-    return res.data;
+  getTransfers: async (params = {}, forceRefresh = false) => {
+    const persist = !params.search;
+    return cachedGet('/transfers/', params, {
+      ttlMs: 300000,
+      persist,
+      skipCache: forceRefresh,
+    });
   },
 
   // 7. Compare & Rivalry (Rekabet)
   comparePlayers: async (player1, player2, season) => {
     const params = { player1, player2 };
     if (season) params.season = season;
-    const res = await apiClient.get('/compare/', { params });
-    return res.data;
+    return cachedGet('/compare/', params, { ttlMs: 180000 });
   },
   getRivalry: async (team1, team2, competition = 'ALL', refresh = false) => {
     const params = { team1, team2 };
     if (competition && competition !== 'ALL') params.competition = competition;
     if (refresh) params.refresh = 'true';
-    const res = await apiClient.get('/rivalry/', { params });
-    return res.data;
+    return cachedGet('/rivalry/', params, {
+      ttlMs: 300000,
+      persist: !refresh && (!competition || competition === 'ALL'),
+      skipCache: refresh,
+    });
   },
 
   // 8. Standings & Leaders
-  getStandings: async (params = {}) => {
-    const res = await apiClient.get('/standings/', {
-      params: { ...params, _t: Date.now() },
+  getStandings: async (params = {}, forceRefresh = false) => {
+    const persist = !params.season || params.season === '2026/2027';
+    return cachedGet('/standings/', params, {
+      ttlMs: 60000,
+      persist,
+      skipCache: forceRefresh,
     });
-    return res.data;
   },
-  getLeaderboards: async (params = {}) => {
-    const res = await apiClient.get('/leaderboards/', { params });
-    return res.data;
+  getLeaderboards: async (params = {}, forceRefresh = false) => {
+    return cachedGet('/leaderboards/', params, {
+      ttlMs: 120000,
+      skipCache: forceRefresh,
+    });
   },
 
   // 9. Scout & Favoriler

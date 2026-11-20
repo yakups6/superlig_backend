@@ -83,44 +83,51 @@ export default function RivalryScreen({ navigation, route }) {
     let cancelled = false;
     async function init() {
       try {
-        const [slTeams, allTeams] = await Promise.all([
-          superligApi.getTeams({ is_super_lig: true }),
-          superligApi.getTeams(),
-        ]);
+        const p1 = route?.params?.team1Id;
+        const p2 = route?.params?.team2Id;
+        const hasInitialPair = Boolean(p1 && p2 && String(p1) !== String(p2));
+        if (hasInitialPair) {
+          loadRivalry(p1, p2, 'ALL', false);
+        }
+
+        const scopeTeams = await superligApi.getTeams({ scope: 'rivalry' });
         if (cancelled) return;
 
-        const activeList = Array.isArray(slTeams) ? slTeams : [];
-        const histList = (Array.isArray(allTeams) ? allTeams : []).filter(
+        const list = Array.isArray(scopeTeams) ? scopeTeams : [];
+        const activeList = list.filter((t) => t.is_super_lig);
+        const histList = list.filter(
           (t) => !t.is_super_lig && HISTORICAL_CLUBS.includes(t.name)
         );
         const combined = [...activeList, ...histList];
         setTeams(combined);
 
-        if (combined.length >= 2) {
-          const gs = combined.find((t) => t.name?.includes('Galatasaray'));
-          const fb = combined.find((t) => t.name?.includes('Fenerbahçe'));
-          const byName1 =
-            route?.params?.team1Name &&
-            combined.find(
-              (t) => t.name?.toLowerCase() === String(route.params.team1Name).toLowerCase()
-            );
-          const byName2 =
-            route?.params?.team2Name &&
-            combined.find(
-              (t) => t.name?.toLowerCase() === String(route.params.team2Name).toLowerCase()
-            );
-          const init1 =
-            route?.params?.team1Id || byName1?.id || t1Id || gs?.id || combined[0].id;
-          let init2 =
-            route?.params?.team2Id || byName2?.id || t2Id || fb?.id || combined[1].id;
-          if (String(init1) === String(init2)) {
-            init2 = combined.find((t) => String(t.id) !== String(init1))?.id || combined[1].id;
+        if (!hasInitialPair) {
+          if (combined.length >= 2) {
+            const gs = combined.find((t) => t.name?.includes('Galatasaray'));
+            const fb = combined.find((t) => t.name?.includes('Fenerbahçe'));
+            const byName1 =
+              route?.params?.team1Name &&
+              combined.find(
+                (t) => t.name?.toLowerCase() === String(route.params.team1Name).toLowerCase()
+              );
+            const byName2 =
+              route?.params?.team2Name &&
+              combined.find(
+                (t) => t.name?.toLowerCase() === String(route.params.team2Name).toLowerCase()
+              );
+            const init1 =
+              route?.params?.team1Id || byName1?.id || t1Id || gs?.id || combined[0].id;
+            let init2 =
+              route?.params?.team2Id || byName2?.id || t2Id || fb?.id || combined[1].id;
+            if (String(init1) === String(init2)) {
+              init2 = combined.find((t) => String(t.id) !== String(init1))?.id || combined[1].id;
+            }
+            setT1Id(init1);
+            setT2Id(init2);
+            loadRivalry(init1, init2, 'ALL', false);
+          } else {
+            setLoading(false);
           }
-          setT1Id(init1);
-          setT2Id(init2);
-          loadRivalry(init1, init2, 'ALL', false);
-        } else {
-          setLoading(false);
         }
       } catch (err) {
         console.log('Rivalry init error:', err?.message);

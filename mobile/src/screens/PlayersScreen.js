@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -58,55 +58,162 @@ export default function PlayersScreen({ navigation }) {
     loadPlayersForSeason(selectedSeason);
   }, [selectedSeason]);
 
-  const clubMap = new Map();
-  players.forEach((p) => {
-    const tId = p.team_id || p.current_team;
-    if (tId && p.team_name && !clubMap.has(String(tId))) {
-      clubMap.set(String(tId), p.team_name);
-    }
-  });
-  const clubs = Array.from(clubMap.entries())
-    .sort((a, b) => a[1].localeCompare(b[1], 'tr'))
-    .map(([id, name]) => ({ id, name }));
-
-  const filtered = players
-    .filter((p) => {
-      if (posFilter !== 'ALL') {
-        const pos = (p.position || '').toLowerCase();
-        if (posFilter === 'FORVET' && !pos.includes('forvet') && !pos.includes('santr') && !pos.includes('kanat'))
-          return false;
-        if (posFilter === 'ORTA' && !pos.includes('orta') && !pos.includes('on numara') && !pos.includes('önlibero'))
-          return false;
-        if (posFilter === 'DEFANS' && !pos.includes('stoper') && !pos.includes('bek') && !pos.includes('defans'))
-          return false;
-        if (posFilter === 'KALECI' && !pos.includes('kaleci')) return false;
+  const { clubMap, clubs } = useMemo(() => {
+    const map = new Map();
+    players.forEach((p) => {
+      const tId = p.team_id || p.current_team;
+      if (tId && p.team_name && !map.has(String(tId))) {
+        map.set(String(tId), p.team_name);
       }
-      if (teamFilter !== 'ALL') {
-        if (String(p.team_id) !== String(teamFilter) && String(p.current_team) !== String(teamFilter)) {
-          return false;
-        }
-      }
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        return (
-          p.name?.toLowerCase().includes(q) ||
-          p.position?.toLowerCase().includes(q) ||
-          p.team_name?.toLowerCase().includes(q)
-        );
-      }
-      return true;
-    })
-    .sort((a, b) => {
-      const valDiff = (Number(b.market_value) || 0) - (Number(a.market_value) || 0);
-      if (valDiff !== 0) return valDiff;
-      return (Number(b.season_matches) || 0) - (Number(a.season_matches) || 0);
     });
+    const sortedClubs = Array.from(map.entries())
+      .sort((a, b) => a[1].localeCompare(b[1], 'tr'))
+      .map(([id, name]) => ({ id, name }));
+    return { clubMap: map, clubs: sortedClubs };
+  }, [players]);
+
+  const filtered = useMemo(
+    () =>
+      players
+        .filter((p) => {
+          if (posFilter !== 'ALL') {
+            const pos = (p.position || '').toLowerCase();
+            if (posFilter === 'FORVET' && !pos.includes('forvet') && !pos.includes('santr') && !pos.includes('kanat'))
+              return false;
+            if (posFilter === 'ORTA' && !pos.includes('orta') && !pos.includes('on numara') && !pos.includes('önlibero'))
+              return false;
+            if (posFilter === 'DEFANS' && !pos.includes('stoper') && !pos.includes('bek') && !pos.includes('defans'))
+              return false;
+            if (posFilter === 'KALECI' && !pos.includes('kaleci')) return false;
+          }
+          if (teamFilter !== 'ALL') {
+            if (String(p.team_id) !== String(teamFilter) && String(p.current_team) !== String(teamFilter)) {
+              return false;
+            }
+          }
+          if (searchQuery.trim()) {
+            const q = searchQuery.toLowerCase();
+            return (
+              p.name?.toLowerCase().includes(q) ||
+              p.position?.toLowerCase().includes(q) ||
+              p.team_name?.toLowerCase().includes(q)
+            );
+          }
+          return true;
+        })
+        .sort((a, b) => {
+          const valDiff = (Number(b.market_value) || 0) - (Number(a.market_value) || 0);
+          if (valDiff !== 0) return valDiff;
+          return (Number(b.season_matches) || 0) - (Number(a.season_matches) || 0);
+        }),
+    [players, posFilter, teamFilter, searchQuery]
+  );
 
   const isHistorical = parseInt(String(selectedSeason), 10) < 2004;
   const activeClubLabel =
     teamFilter === 'ALL'
       ? `Tüm Kulüpler (${clubs.length})`
       : clubMap.get(String(teamFilter)) || 'Kulüp';
+
+  const renderPlayerItem = useCallback(
+    ({ item: p }) => {
+      const hasStats = p.season_matches > 0;
+      const sub = hasStats
+        ? `${p.team_short_name || p.team_name || ''} • ${p.position || ''} • ${p.season_matches}M ${p.season_goals || 0}G ${p.season_assists || 0}A`
+        : `${p.team_short_name || p.team_name || ''} • ${p.position || ''} • #${p.jersey_number || '-'}`;
+      return (
+        <TouchableOpacity
+          style={styles.playerCard}
+          activeOpacity={0.78}
+          onPress={() => setDetailPlayer(p)}
+        >
+          <View style={styles.cardLeft}>
+            <Image
+              source={{ uri: p.image_url || DEFAULT_PLAYER_IMG }}
+              style={styles.avatar}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.playerName} numberOfLines={1}>
+                {cleanPlayerDisplayName(p.name)}
+              </Text>
+              <Text
+                style={[styles.playerSub, hasStats && { color: '#93c5fd' }]}
+                numberOfLines={1}
+              >
+                {sub}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.valPill}>
+            <Text style={styles.valPillText}>
+              {formatMarketValue(p.market_value, p.is_legend, isHistorical)}
+            </Text>
+          </View>
+        </TouchableOpacity>
+      );
+    },
+    [isHistorical]
+  );
+
+  const listHeaderElement = (
+    <View>
+      <SeasonPickerBar
+        seasons={seasons}
+        selectedSeasonName={selectedSeason}
+        onSelectSeason={(s) => {
+          setTeamFilter('ALL');
+          setSelectedSeason(s);
+        }}
+        subtitle={
+          selectedSeason === '2026/2027'
+            ? 'Aktif Sezon Kadroları'
+            : `${selectedSeason} Dönem Kadroları`
+        }
+      />
+
+      <TextInput
+        style={styles.searchInput}
+        placeholder="Tüm ligde oyuncu adı veya mevki ara..."
+        placeholderTextColor={COLORS.textDim}
+        value={searchQuery}
+        onChangeText={setSearchQuery}
+      />
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.posTabsRow}
+      >
+        {POS_TABS.map((t) => {
+          const active = posFilter === t.key;
+          return (
+            <TouchableOpacity
+              key={t.key}
+              style={[styles.posPill, active && styles.posPillActive]}
+              onPress={() => setPosFilter(t.key)}
+            >
+              <Text style={[styles.posPillText, active && styles.posPillTextActive]}>
+                {t.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+
+      <TouchableOpacity
+        style={styles.clubSelectBtn}
+        onPress={() => setTeamModalOpen(true)}
+      >
+        <Text style={styles.clubSelectText}>{activeClubLabel}</Text>
+        <Text style={styles.clubArrow}>▼</Text>
+      </TouchableOpacity>
+
+      <View style={styles.sectionHead}>
+        <Text style={styles.sectionTitle}>Piyasa Değerine Göre Sıralı</Text>
+        <Text style={styles.countText}>{filtered.length} Oyuncu</Text>
+      </View>
+    </View>
+  );
 
   return (
     <View style={styles.container}>
@@ -118,107 +225,25 @@ export default function PlayersScreen({ navigation }) {
         <View style={{ width: 32 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <SeasonPickerBar
-          seasons={seasons}
-          selectedSeasonName={selectedSeason}
-          onSelectSeason={(s) => {
-            setTeamFilter('ALL');
-            setSelectedSeason(s);
-          }}
-          subtitle={
-            selectedSeason === '2026/2027'
-              ? 'Aktif Sezon Kadroları'
-              : `${selectedSeason} Dönem Kadroları`
-          }
-        />
-
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Tüm ligde oyuncu adı veya mevki ara..."
-          placeholderTextColor={COLORS.textDim}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-        />
-
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.posTabsRow}
-        >
-          {POS_TABS.map((t) => {
-            const active = posFilter === t.key;
-            return (
-              <TouchableOpacity
-                key={t.key}
-                style={[styles.posPill, active && styles.posPillActive]}
-                onPress={() => setPosFilter(t.key)}
-              >
-                <Text style={[styles.posPillText, active && styles.posPillTextActive]}>
-                  {t.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </ScrollView>
-
-        <TouchableOpacity
-          style={styles.clubSelectBtn}
-          onPress={() => setTeamModalOpen(true)}
-        >
-          <Text style={styles.clubSelectText}>{activeClubLabel}</Text>
-          <Text style={styles.clubArrow}>▼</Text>
-        </TouchableOpacity>
-
-        <View style={styles.sectionHead}>
-          <Text style={styles.sectionTitle}>Piyasa Değerine Göre Sıralı</Text>
-          <Text style={styles.countText}>{filtered.length} Oyuncu</Text>
-        </View>
-
-        {loading ? (
-          <ActivityIndicator size="large" color={COLORS.accentRed} style={{ marginTop: 30 }} />
-        ) : filtered.length === 0 ? (
-          <Text style={styles.emptyText}>Bu sezon ve kriterlere uygun oyuncu bulunamadı.</Text>
-        ) : (
-          filtered.slice(0, 120).map((p, idx) => {
-            const hasStats = p.season_matches > 0;
-            const sub = hasStats
-              ? `${p.team_short_name || p.team_name || ''} • ${p.position || ''} • ${p.season_matches}M ${p.season_goals || 0}G ${p.season_assists || 0}A`
-              : `${p.team_short_name || p.team_name || ''} • ${p.position || ''} • #${p.jersey_number || '-'}`;
-            return (
-              <TouchableOpacity
-                key={`${p.id}-${idx}`}
-                style={styles.playerCard}
-                activeOpacity={0.78}
-                onPress={() => setDetailPlayer(p)}
-              >
-                <View style={styles.cardLeft}>
-                  <Image
-                    source={{ uri: p.image_url || DEFAULT_PLAYER_IMG }}
-                    style={styles.avatar}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.playerName} numberOfLines={1}>
-                      {cleanPlayerDisplayName(p.name)}
-                    </Text>
-                    <Text
-                      style={[styles.playerSub, hasStats && { color: '#93c5fd' }]}
-                      numberOfLines={1}
-                    >
-                      {sub}
-                    </Text>
-                  </View>
-                </View>
-                <View style={styles.valPill}>
-                  <Text style={styles.valPillText}>
-                    {formatMarketValue(p.market_value, p.is_legend, isHistorical)}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            );
-          })
-        )}
-      </ScrollView>
+      <FlatList
+        data={loading ? [] : filtered}
+        keyExtractor={(item, idx) => `${item.id}-${item.team_id || ''}-${idx}`}
+        renderItem={renderPlayerItem}
+        ListHeaderComponent={listHeaderElement}
+        ListEmptyComponent={
+          loading ? (
+            <ActivityIndicator size="large" color={COLORS.accentRed} style={{ marginTop: 30 }} />
+          ) : (
+            <Text style={styles.emptyText}>Bu sezon ve kriterlere uygun oyuncu bulunamadı.</Text>
+          )
+        }
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
+        windowSize={5}
+        removeClippedSubviews
+      />
 
       {/* CLUB PICKER MODAL */}
       <Modal

@@ -4,7 +4,7 @@ from .views import (
     SeasonViewSet, TeamViewSet, PlayerViewSet,
     PlayerSeasonStatsViewSet, TransferViewSet,
     LeagueStandingViewSet, ScoutListViewSet, FixtureViewSet,
-    LeaderboardsView, PlayerComparisonView, TeamRivalryView, HomeSummaryView, LegendsView,
+    LeaderboardsView, PlayerComparisonView, TeamRivalryView, HomeSummaryView, LegendsView, HealthCheckView,
     RegisterView, LoginView, CustomTokenRefreshView, UserProfileView, ChangePasswordView,
     SyncTransfersView, SyncSquadsView, SyncAttributesView,
     SyncFixturesView, SyncAllView,
@@ -41,6 +41,7 @@ urlpatterns = [
     path('rivalry/', TeamRivalryView.as_view(), name='team-rivalry'),
     path('home-summary/', HomeSummaryView.as_view(), name='home-summary'),
     path('legends/', LegendsView.as_view(), name='legends-list'),
+    path('health/', HealthCheckView.as_view(), name='api-health'),
 
     # Veri Entegrasyonu & Otomasyon Endpoints (Transfermarkt, SofaScore/WhoScored, API-Football)
     path('sync/transfers/', SyncTransfersView.as_view(), name='sync-transfers'),

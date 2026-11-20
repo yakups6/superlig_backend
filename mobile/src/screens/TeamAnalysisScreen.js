@@ -67,12 +67,10 @@ export default function TeamAnalysisScreen({ navigation, route }) {
   useEffect(() => {
     async function init() {
       try {
-        const [slTeams, allTeams] = await Promise.all([
-          superligApi.getTeams({ is_super_lig: true }),
-          superligApi.getTeams(),
-        ]);
-        const activeList = Array.isArray(slTeams) ? slTeams : [];
-        const histList = (Array.isArray(allTeams) ? allTeams : []).filter(
+        const scopeTeams = await superligApi.getTeams({ scope: 'rivalry' });
+        const list = Array.isArray(scopeTeams) ? scopeTeams : [];
+        const activeList = list.filter((t) => t.is_super_lig);
+        const histList = list.filter(
           (t) => !t.is_super_lig && HISTORICAL_CLUBS.includes(t.name)
         );
         const combined = [...activeList, ...histList];
