@@ -32,6 +32,7 @@ from .serializers import (
     FavoriteTeamSerializer, UserDeviceSerializer, NotificationLogSerializer
 )
 from .services import compare_players
+from .permissions import IsAdminOrReadOnly
 from .integrations import (
     TransfermarktScraper, PlayerAnalyticsService, APIFootballService
 )
@@ -50,6 +51,7 @@ class RegisterView(APIView):
     Başarılı kayıtta kullanıcı bilgileri ve JWT token'ları döner.
     """
     permission_classes = [permissions.AllowAny]
+    throttle_scope = 'auth_register'
 
     @extend_schema(
         tags=['1. Kimlik Doğrulama (Auth)'],
@@ -80,6 +82,7 @@ class LoginView(APIView):
     Giriş başarılı olduğunda JWT erişim ve yenileme token'ları döner.
     """
     permission_classes = [permissions.AllowAny]
+    throttle_scope = 'auth_login'
 
     @extend_schema(
         tags=['1. Kimlik Doğrulama (Auth)'],
@@ -171,6 +174,7 @@ class ChangePasswordView(APIView):
     Şifre Değiştirme (POST /api/auth/change-password/)
     """
     permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = 'sensitive_action'
 
     @extend_schema(
         tags=['1. Kimlik Doğrulama (Auth)'],
@@ -207,7 +211,7 @@ class SeasonViewSet(viewsets.ModelViewSet):
     """
     queryset = Season.objects.all()
     serializer_class = SeasonSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     @extend_schema(
         tags=['2. Sezonlar'],
@@ -228,7 +232,7 @@ class SeasonViewSet(viewsets.ModelViewSet):
         description="Takvim gününe göre sistemin aktif sezonunu anında senkronize eder.",
         responses={200: OpenApiTypes.OBJECT}
     )
-    @action(detail=False, methods=['post'], url_path='auto-switch')
+    @action(detail=False, methods=['post'], url_path='auto-switch', permission_classes=[permissions.IsAdminUser])
     def auto_switch(self, request):
         active_season = Season.get_active_season()
         return Response({
@@ -257,7 +261,7 @@ class TeamViewSet(viewsets.ModelViewSet):
     Takım CRUD (GET, POST, PUT, PATCH, DELETE)
     """
     queryset = Team.objects.all()
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'city', 'stadium']
 
@@ -298,7 +302,7 @@ class PlayerViewSet(viewsets.ModelViewSet):
     Oyuncu CRUD (GET, POST, PUT, PATCH, DELETE)
     """
     queryset = Player.objects.select_related('current_team').prefetch_related('attributes', 'season_stats__season', 'season_stats__team')
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'nationality', 'position']
 
@@ -706,7 +710,7 @@ class PlayerSeasonStatsViewSet(viewsets.ModelViewSet):
     """
     queryset = PlayerSeasonStats.objects.select_related('player', 'season', 'team')
     serializer_class = PlayerSeasonStatsSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -752,7 +756,7 @@ class TransferViewSet(viewsets.ModelViewSet):
     """
     queryset = Transfer.objects.select_related('player', 'from_team', 'to_team', 'season')
     serializer_class = TransferSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter]
     search_fields = ['player__name', 'from_team__name', 'to_team__name', 'details']
 
@@ -819,7 +823,7 @@ class LeagueStandingViewSet(viewsets.ModelViewSet):
     """
     queryset = LeagueStanding.objects.select_related('team', 'season').order_by('rank', '-points', '-goal_difference')
     serializer_class = LeagueStandingSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -1031,8 +1035,8 @@ class DeviceRegistrationView(APIView):
     Mobil uygulamanın Expo Push Token'ını kaydettiği endpoint.
     Giriş yapmış kullanıcıya bağlar (veya misafir cihaz olarak kaydeder).
     """
-    authentication_classes = []
     permission_classes = [permissions.AllowAny]
+    throttle_scope = 'sensitive_action'
 
     def post(self, request):
         token = request.data.get('expo_push_token')
@@ -1042,6 +1046,13 @@ class DeviceRegistrationView(APIView):
         platform = request.data.get('platform', 'android')
         device_name = request.data.get('device_name', '')
         user = request.user if request.user and request.user.is_authenticated else None
+
+        existing = UserDevice.objects.filter(expo_push_token=token).first()
+        if existing and existing.user_id and (not user or existing.user_id != user.id):
+            return Response(
+                {"error": "Bu cihaz token'ı başka bir kullanıcıya ait."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         dev, created = UserDevice.objects.update_or_create(
             expo_push_token=token,
@@ -1082,9 +1093,14 @@ class NotificationInboxViewSet(viewsets.ReadOnlyModelViewSet):
         NotificationLog.objects.filter(user=request.user, is_read=False).update(is_read=True)
         return Response({"status": "ok", "message": "Tüm bildirimler okundu olarak işaretlendi."})
 
-    @action(detail=True, methods=['post'])
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def mark_read(self, request, pk=None):
         notif = self.get_object()
+        if notif.user_id != request.user.id:
+            return Response(
+                {"error": "Bu bildirimi güncelleme yetkiniz yok."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         notif.is_read = True
         notif.save(update_fields=['is_read'])
         return Response({"status": "ok", "message": "Bildirim okundu."})
@@ -1102,10 +1118,10 @@ class NotificationInboxViewSet(viewsets.ReadOnlyModelViewSet):
 class TestNotificationView(APIView):
     """
     Maçkolik bildirim simülatörü.
-    Test amaçlı canlı gol, asist veya ilk 11 bildirimi oluşturup telefonunuza basar.
+    Test amaçlı canlı gol, asist veya ilk 11 bildirimi oluşturup yalnızca istek yapan kullanıcıya iletir.
     """
-    authentication_classes = []
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_scope = 'sensitive_action'
 
     def post(self, request):
         evt_type = request.data.get('type', 'GOAL').upper()
@@ -1127,7 +1143,7 @@ class TestNotificationView(APIView):
                 'is_own_goal': False,
                 'team_short': fix.home_team.short_name or 'GS'
             }
-            res = dispatch_match_goal_notification(fix, event_data, target_user=request.user if request.user.is_authenticated else None)
+            res = dispatch_match_goal_notification(fix, event_data, target_user=request.user)
             return Response({
                 "status": "success",
                 "message": f"⚽ {player_name} için test gol bildirimi fırlatıldı!",
@@ -1136,7 +1152,7 @@ class TestNotificationView(APIView):
         elif evt_type == 'LINEUP':
             pl = Player.objects.filter(name__icontains=player_name.split()[-1]).first() or Player.objects.first()
             team = pl.current_team if pl and pl.current_team else fix.home_team
-            res = dispatch_lineup_notification(fix, pl, team, target_user=request.user if request.user.is_authenticated else None)
+            res = dispatch_lineup_notification(fix, pl, team, target_user=request.user)
             return Response({
                 "status": "success",
                 "message": f"📋 {pl.name} için test ilk 11 bildirimi fırlatıldı!",
@@ -1435,7 +1451,7 @@ def recalculate_season_standings(season):
 class FixtureViewSet(viewsets.ModelViewSet):
     queryset = Fixture.objects.select_related('home_team', 'away_team', 'season').all()
     serializer_class = FixtureSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [IsAdminOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['home_team__name', 'away_team__name', 'venue', 'referee']
     ordering_fields = ['match_date', 'round_number']
@@ -1759,8 +1775,7 @@ class SyncTransfersView(APIView):
     Transfer Takip ekranındaki '🔄 API ile Güncelle' butonu için endpoint.
     Transfermarkt web scraping yaparak Süper Lig'in yeni transferlerini veritabanına aktarır.
     """
-    authentication_classes = []
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAdminUser]
 
     @extend_schema(
         tags=['12. Veri Entegrasyonu & Otomasyon'],
@@ -1784,8 +1799,7 @@ class SyncSquadsView(APIView):
     """
     Transfermarkt üzerinden kulüplerin resmi kadrolarını ve piyasa değerlerini günceller.
     """
-    authentication_classes = []
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAdminUser]
 
     @extend_schema(
         tags=['12. Veri Entegrasyonu & Otomasyon'],
@@ -1828,8 +1842,7 @@ class SyncAttributesView(APIView):
     """
     WhoScored ve SofaScore analitiği ile oyuncuların güçlü/zayıf yönlerini ve radar grafiklerini günceller.
     """
-    authentication_classes = []
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAdminUser]
 
     @extend_schema(
         tags=['12. Veri Entegrasyonu & Otomasyon'],
@@ -1853,8 +1866,7 @@ class SyncFixturesView(APIView):
     """
     API-Football (RapidAPI) üzerinden Süper Lig fikstürü, canlı skorları ve puan durumunu günceller.
     """
-    authentication_classes = []
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAdminUser]
 
     @extend_schema(
         tags=['12. Veri Entegrasyonu & Otomasyon'],
@@ -1878,8 +1890,7 @@ class SyncAllView(APIView):
     """
     Tek tıkla tüm entegrasyonları (Transfermarkt, SofaScore/WhoScored, API-Football) sırayla çalıştırır.
     """
-    authentication_classes = []
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAdminUser]
 
     @extend_schema(
         tags=['12. Veri Entegrasyonu & Otomasyon'],

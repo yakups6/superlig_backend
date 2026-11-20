@@ -212,7 +212,18 @@ class SuperLigAPITestCase(TestCase):
         self.assertIn("fixtures", res_round.data)
 
     def test_data_sync_endpoints(self):
-        """Transfermarkt, SofaScore ve API-Football senkronizasyon uç noktaları test edilir"""
+        """Transfermarkt, SofaScore ve API-Football senkronizasyon uç noktaları yalnızca yönetici (admin) yetkisiyle çalışmalı"""
+        # Anonim veya sıradan kullanıcı senkronizasyon tetikleyememeli
+        self.assertEqual(self.client.post('/api/sync/transfers/').status_code, status.HTTP_401_UNAUTHORIZED)
+        self.client.force_authenticate(user=self.user)
+        self.assertEqual(self.client.post('/api/sync/transfers/').status_code, status.HTTP_403_FORBIDDEN)
+
+        # Yönetici (staff) kullanıcı yetkili olmalı
+        admin_user = User.objects.create_user(
+            username="admin_sync", email="admin@test.com", password="AdminPassword123!", is_staff=True
+        )
+        self.client.force_authenticate(user=admin_user)
+
         # 1. Transfer Takip '🔄 API ile Güncelle' butonu (Transfermarkt)
         res_tr = self.client.post('/api/sync/transfers/')
         self.assertEqual(res_tr.status_code, status.HTTP_200_OK)
@@ -803,6 +814,56 @@ class SuperLigAPITestCase(TestCase):
         )
         self.assertEqual(resp_sl.status_code, status.HTTP_200_OK)
         self.assertEqual(resp_sl.json()["summary"]["total_matches"], 2)
+
+    def test_security_access_control_and_admin_only_writes(self):
+        """Herkese açık GET okumaları çalışırken lig tablolarına yazma ve sync yalnızca admin kullanıcıya izin vermeli"""
+        # Okuma (GET) herkese açık kalmalı
+        self.assertEqual(self.client.get('/api/teams/').status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get('/api/players/').status_code, status.HTTP_200_OK)
+        self.assertEqual(self.client.get('/api/home-summary/').status_code, status.HTTP_200_OK)
+
+        # Giriş yapmamış kullanıcı test bildirimi tetikleyememeli
+        self.assertEqual(
+            self.client.post('/api/notifications/test-event/', {"type": "GOAL"}).status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+        # Sıradan giriş yapmış kullanıcı genel lig verilerini değiştirememeli / silememeli
+        self.client.force_authenticate(user=self.user)
+        self.assertEqual(
+            self.client.post('/api/teams/', {"name": "Sahte Takım", "is_super_lig": True}).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.patch(f'/api/players/{self.osimhen.id}/', {"market_value": "1"}).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.delete(f'/api/teams/{self.gs.id}/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.post('/api/seasons/auto-switch/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.post('/api/sync/all/').status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+        # Giriş yapmış kullanıcı yalnızca kendi adına test bildirimi tetikleyebilmeli
+        Fixture.objects.create(
+            season=self.season,
+            round_name="1. Hafta",
+            round_number=1,
+            home_team=self.gs,
+            away_team=self.fb,
+            match_date=timezone.now(),
+            status="NS",
+        )
+        res_notif = self.client.post('/api/notifications/test-event/', {"type": "GOAL"})
+        self.assertEqual(res_notif.status_code, status.HTTP_200_OK)
+
 
 
 

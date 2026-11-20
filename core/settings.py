@@ -18,10 +18,17 @@ load_dotenv(BASE_DIR / '.env')
 SECRET_KEY = os.getenv('SECRET_KEY') or get_random_secret_key()
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DEBUG', 'True').lower() in ('true', '1')
+DEBUG = os.getenv('DEBUG', 'False').lower() in ('true', '1')
 
-# React Native (Android Emulator 10.0.2.2, iOS Simulator localhost, Gerçek Cihaz Wi-Fi IP) için izin ver
-ALLOWED_HOSTS = ['*']
+# İzin verilen sunucu adresleri (.env / Render üzerinden özelleştirilebilir)
+_raw_hosts = os.getenv(
+    'ALLOWED_HOSTS',
+    'superlig-backend.onrender.com,localhost,127.0.0.1,10.0.2.2,testserver',
+)
+ALLOWED_HOSTS = [h.strip() for h in _raw_hosts.split(',') if h.strip()]
+_render_host = os.getenv('RENDER_EXTERNAL_HOSTNAME', '').strip()
+if _render_host and _render_host not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(_render_host)
 
 
 # Application definition
@@ -36,6 +43,7 @@ INSTALLED_APPS = [
     
     # Third party apps
     'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'drf_spectacular',
     
@@ -147,9 +155,14 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
-# CORS Settings (React Native için tüm isteklere izin ver)
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS Settings (Yalnızca güvenilir kökenlere izin ver; mobil native APK Origin göndermeden çalışır)
+CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
+_raw_cors_origins = os.getenv(
+    'CORS_ALLOWED_ORIGINS',
+    'https://superlig-backend.onrender.com,http://localhost:8000,http://127.0.0.1:8000,http://localhost:8081,http://localhost:19006',
+)
+CORS_ALLOWED_ORIGINS = [o.strip() for o in _raw_cors_origins.split(',') if o.strip()]
 
 from datetime import timedelta
 
@@ -161,6 +174,18 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticatedOrReadOnly',
     ),
+    'DEFAULT_THROTTLE_CLASSES': (
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+        'rest_framework.throttling.ScopedRateThrottle',
+    ),
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '300/min',
+        'user': '600/min',
+        'auth_login': '10/min',
+        'auth_register': '5/min',
+        'sensitive_action': '15/min',
+    },
     'DEFAULT_PAGINATION_CLASS': None, # Mobil uygulamalarda listeleri rahatça almak için varsayılan None
     'DEFAULT_FILTER_BACKENDS': [
         'rest_framework.filters.SearchFilter',
@@ -170,12 +195,12 @@ REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
-# Simple JWT Ayarları (Mobil oturum yönetimi)
+# Simple JWT Ayarları (Mobil oturum yönetimi; api.js süresi biten access token'ı otomatik yeniler)
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=7),
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=2),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
     'ROTATE_REFRESH_TOKENS': True,
-    'BLACKLIST_AFTER_ROTATION': False,
+    'BLACKLIST_AFTER_ROTATION': True,
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
@@ -224,3 +249,14 @@ SPECTACULAR_SETTINGS = {
     },
     'COMPONENT_SPLIT_REQUEST': True,
 }
+
+# Production Security Headers (DEBUG=False iken aktif)
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = os.getenv('SECURE_SSL_REDIRECT', 'false').lower() in ('true', '1')
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = 'DENY'
+    SECURE_HSTS_SECONDS = 31536000 if SECURE_SSL_REDIRECT else 0
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_SSL_REDIRECT
