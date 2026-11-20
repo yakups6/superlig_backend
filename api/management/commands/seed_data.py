@@ -1,3 +1,4 @@
+import os
 from django.core.management.base import BaseCommand
 from api.models import (
     Season, Team, LeagueStanding, Player, PlayerAttribute,
@@ -606,13 +607,21 @@ class Command(BaseCommand):
 
         # 7. KULLANICILAR
         from django.contrib.auth.models import User
-        u_yakup, _ = User.objects.get_or_create(username="yakups6", defaults={"email": "yakups6@example.com", "first_name": "Yakup"})
-        u_yakup.set_password("pukay2006")
-        u_yakup.save()
 
-        u_demo, _ = User.objects.get_or_create(username="testscout", defaults={"email": "scout@example.com", "first_name": "Demo"})
-        u_demo.set_password("SecurePassword123!")
-        u_demo.save()
+        def _configure_seed_user(username, email, first_name, env_var):
+            user_obj, _ = User.objects.get_or_create(
+                username=username,
+                defaults={"email": email, "first_name": first_name},
+            )
+            env_password = os.getenv(env_var, "").strip()
+            if env_password:
+                user_obj.set_password(env_password)
+            elif not user_obj.has_usable_password():
+                user_obj.set_unusable_password()
+            user_obj.save()
+
+        _configure_seed_user("yakups6", "yakups6@example.com", "Yakup", "SEED_ADMIN_PASSWORD")
+        _configure_seed_user("testscout", "scout@example.com", "Demo", "SEED_DEMO_PASSWORD")
 
         # 8. MAÇLAR & FİKSTÜR (API-Football Fallback)
         from api.integrations import APIFootballService, PlayerAnalyticsService

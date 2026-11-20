@@ -5,6 +5,7 @@ Süper Lig Analiz & Scout API
 
 import os
 from pathlib import Path
+from django.core.management.utils import get_random_secret_key
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -14,7 +15,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-9o+w*r7hz9frcu@l)syqpyo1w3&=5i)@aeve)9_mnr5_%$n%#+')
+SECRET_KEY = os.getenv('SECRET_KEY') or get_random_secret_key()
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True').lower() in ('true', '1')
@@ -94,7 +95,7 @@ WSGI_APPLICATION = 'core.wsgi.application'
 DB_ENGINE = os.getenv('DB_ENGINE', 'sqlite').lower()
 DB_NAME = os.getenv('DB_NAME', 'superlig_db')
 DB_USER = os.getenv('DB_USER', 'postgres')
-DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
+DB_PASSWORD = os.getenv('DB_PASSWORD', '')
 DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_PORT = os.getenv('DB_PORT', '5432')
 

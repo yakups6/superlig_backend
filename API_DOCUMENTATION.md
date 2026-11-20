@@ -66,7 +66,7 @@ CREATE DATABASE superlig_db;
 Proje kök dizinindeki `.env` dosyasını düzenleyin:
 ```env
 DEBUG=True
-SECRET_KEY=django-insecure-superlig-secret-key
+SECRET_KEY=your-secret-key-here
 
 # PostgreSQL'i aktif etmek için:
 USE_SQLITE=false
