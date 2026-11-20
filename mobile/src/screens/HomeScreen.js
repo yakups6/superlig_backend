@@ -197,7 +197,7 @@ export default function HomeScreen({ navigation }) {
           <Text style={styles.seasonText}>{currentRoundLabel}</Text>
         </View>
 
-        <Text style={styles.heroTitle}>Süper Lig Analiz & Scout</Text>
+        <Text style={styles.heroTitle}>Süper Lig Analiz</Text>
         <Text style={styles.heroSubtitle}>
           Canlı skor akışı, 1959’dan günümüze istatistikler ve transfer analitiği
         </Text>

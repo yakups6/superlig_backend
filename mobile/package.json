@@ -1,7 +1,7 @@
 {
   "name": "superlig-scout-mobile",
   "version": "2.0.0",
-  "description": "Trendyol Süper Lig Analiz, Canlı Skor & Scout Mobil Uygulaması (React Native / Expo)",
+  "description": "Trendyol Süper Lig Analiz & Canlı Skor Mobil Uygulaması (React Native / Expo)",
   "main": "index.js",
   "scripts": {
     "start": "expo start",

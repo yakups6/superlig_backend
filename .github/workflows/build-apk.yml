@@ -56,13 +56,13 @@ jobs:
       - name: Prepare APK Output
         run: |
           mkdir -p output
-          cp mobile/android/app/build/outputs/apk/release/*.apk output/superlig-scout-v2.0.0.apk || cp mobile/android/app/build/outputs/apk/*/*.apk output/superlig-scout.apk
+          cp mobile/android/app/build/outputs/apk/release/*.apk output/superlig-analiz-v2.0.0.apk || cp mobile/android/app/build/outputs/apk/*/*.apk output/superlig-analiz.apk
           ls -la output
 
       - name: Upload APK to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: superlig-scout-v2.0.0-apk
+          name: superlig-analiz-v2.0.0-apk
           path: output/*.apk
           retention-days: 30
 
@@ -71,22 +71,22 @@ jobs:
         if: github.ref == 'refs/heads/main'
         with:
           tag_name: "v2.0.0-${{ github.run_number }}"
-          name: "Süper Lig Scout & Analiz Mobil APK v2.0.0 (Build #${{ github.run_number }})"
+          name: "Süper Lig Analiz Mobil APK v2.0.0 (Build #${{ github.run_number }})"
           body: |
-            ## ⚽ Süper Lig Scout & Analiz - Android Yükleme Dosyası (APK)
+            ## ⚽ Süper Lig Analiz - Android Yükleme Dosyası (APK)
             
             Bu APK dosyasını doğrudan Android telefonunuza indirip tek dokunuşla kurabilirsiniz.
             
             ### 🚀 Sürüm Özellikleri:
             - **Canlı Maç & Fikstür:** 2026/2027 sezonu tüm haftalar, anlık canlı skor akışı
             - **Puan Durumu & Form Grafiği:** Canlı puan tablosu, averaj, iç/dış saha performansı
-            - **500+ Oyuncu & Detaylı İstatistikler:** Radar grafikleri, piyasa değerleri, scout profilleri
-            - **Maçkolik Tarzı Bildirimler:** Favori kulüpleriniz ve scout oyuncularınız için canlı gol, ilk 11 ve asist bildirimleri
+            - **500+ Oyuncu & Detaylı İstatistikler:** Radar grafikleri, piyasa değerleri, oyuncu profilleri
+            - **Maçkolik Tarzı Bildirimler:** Favori kulüpleriniz ve favori oyuncularınız için canlı gol, ilk 11 ve asist bildirimleri
             - **Transfer Merkezi:** En güncel transfer hareketleri ve kadro analizleri
             - **7/24 Canlı Bulut Entegrasyonu:** Wi-Fi veya 4.5G üzerinden anında bağlantı
             
             ### 📲 Kurulum Talimatı:
-            1. Aşağıdaki **`superlig-scout-v2.0.0.apk`** linkine tıklayarak telefonunuza indirin.
+            1. Aşağıdaki **`superlig-analiz-v2.0.0.apk`** linkine tıklayarak telefonunuza indirin.
             2. İndirilen dosyaya dokunun.
             3. Android güvenlik uyarısı verirse *"Yine de yükle"* veya *"Bu kaynaktan izin ver"* seçeneğini onaylayın.
             4. Uygulama telefonunuza yüklendi! Keyifle kullanın. 🎉

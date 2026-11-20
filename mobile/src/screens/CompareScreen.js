@@ -457,7 +457,7 @@ export default function CompareScreen({ navigation, route }) {
             {/* ALGORITHMIC ANALYSIS */}
             {Boolean(algoHeadline || algoInsights.length > 0) && (
               <View style={styles.algoCard}>
-                <Text style={styles.algoTitle}>🤖 Algoritmik Scout Analizi</Text>
+                <Text style={styles.algoTitle}>🤖 Algoritmik Oyuncu Analizi</Text>
                 {Boolean(algoHeadline) && (
                   <Text style={styles.algoHeadline}>{algoHeadline}</Text>
                 )}

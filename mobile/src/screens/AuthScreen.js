@@ -273,7 +273,7 @@ export default function AuthScreen({ navigation }) {
                 <Text style={styles.label}>Kullanıcı Adı *</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="Örn: arda_scout"
+                  placeholder="Örn: arda10"
                   placeholderTextColor={COLORS.textDim}
                   autoCapitalize="none"
                   value={regUsername}

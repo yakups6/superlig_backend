@@ -1,6 +1,6 @@
 """
 Django settings for core project.
-Süper Lig Analiz & Scout API
+Süper Lig Analiz API
 """
 
 import os
@@ -209,7 +209,7 @@ RAPIDAPI_KEY = os.getenv('RAPIDAPI_KEY', '')
 
 # Swagger / OpenAPI (drf-spectacular) Dokümantasyon Ayarları
 SPECTACULAR_SETTINGS = {
-    'TITLE': 'Trendyol Süper Lig Analiz & Scout REST API',
+    'TITLE': 'Trendyol Süper Lig Analiz REST API',
     'DESCRIPTION': (
         'Web Tabanlı Teknolojiler Dönem Sonu Projesi için geliştirilmiş '
         'Süper Lig Analiz, Kadro Takibi, Transfer Takip (Gelen/Giden/Lig İçi), '
