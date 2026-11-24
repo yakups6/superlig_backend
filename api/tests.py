@@ -896,6 +896,91 @@ class SuperLigAPITestCase(TestCase):
         self.assertIn('Fenerbahçe', team_names)
         self.assertNotIn('SSC Napoli', team_names)
 
+    def test_rivalry_match_detail_endpoint_parses_and_caches_details(self):
+        """Rekabet maçı detayı (/api/rivalry/match/<id>/) golleri, hakemi, stadyumu ve İY skorunu çözer ve DB'de önbellekler"""
+        from unittest.mock import Mock
+        from api.models import RivalryMatch
+
+        m = RivalryMatch.objects.create(
+            tm_match_id="TM_4934091",
+            season_label="2026/2027",
+            start_year=2026,
+            competition="Süper Lig",
+            round_label="9. Hafta",
+            match_date=date(2026, 10, 26),
+            match_date_display="26 Eki 2026",
+            match_time="21:30",
+            home_team=self.gs,
+            away_team=self.fb,
+            home_score=2,
+            away_score=1,
+            status="FT",
+        )
+
+        sample_html = """
+        <html><body>
+          <p class="sb-zusatzinfos">
+            <a href="/stadion/stadion/verein/141/saison_id/2026">RAMS Park</a> | <strong>49.500 seyirci</strong>
+            <strong>Hakem:</strong> <a href="/atilla-karaoglan/profil/schiedsrichter/10">Atilla Karaoğlan</a>
+          </p>
+          <div class="sb-halbzeit">(2:0)</div>
+          <div id="sb-tore"><ul>
+            <li class="sb-aktion-heim">
+              <div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: -288px -72px;">&nbsp;</span></div>
+              <div class="sb-aktion-spielstand">1:0</div>
+              <div class="sb-aktion-aktion">
+                <a class="wichtig" href="/osimhen">Victor Osimhen</a>, Sağ ayakla şut<br/>
+                Asist: <a class="wichtig" href="/baris">Barış Alper Yılmaz</a>, Pas
+              </div>
+            </li>
+            <li class="sb-aktion-heim">
+              <div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: -144px -144px;">+2</span></div>
+              <div class="sb-aktion-spielstand">2:0</div>
+              <div class="sb-aktion-aktion">
+                <a class="wichtig" href="/osimhen">Victor Osimhen</a>, Penaltı<br/>
+                Asist: Penaltı: Elle oynayan oyuncu <a class="wichtig" href="/kostic">Filip Kostić</a>
+              </div>
+            </li>
+            <li class="sb-aktion-gast">
+              <div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: -36px -216px;">&nbsp;</span></div>
+              <div class="sb-aktion-spielstand">2:1</div>
+              <div class="sb-aktion-aktion">
+                <a class="wichtig" href="/irfan">İrfan Can Kahveci</a>, Sol ayakla şut
+              </div>
+            </li>
+          </ul></div>
+          <div id="sb-karten"><ul>
+            <li class="sb-aktion-heim"><div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: 0px -36px;">&nbsp;</span></div><div class="sb-aktion-aktion"><a class="wichtig" href="/torreira">Lucas Torreira</a><br/>1. Sarı kart, Faul</div></li>
+            <li class="sb-aktion-gast"><div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: -288px -288px;">&nbsp;</span></div><div class="sb-aktion-aktion"><a class="wichtig" href="/djiku">Alexander Djiku</a><br/>2. Sarı karttan kırmızı kart, Faul</div></li>
+          </ul></div>
+        </body></html>
+        """
+        mock_resp = Mock(status_code=200, text=sample_html)
+
+        with patch("api.integrations.rivalry_service.requests.get", return_value=mock_resp) as mock_get:
+            res1 = self.client.get(f"/api/rivalry/match/{m.id}/")
+            self.assertEqual(res1.status_code, status.HTTP_200_OK)
+            d1 = res1.json()
+            self.assertEqual(d1["venue"], "RAMS Park")
+            self.assertEqual(d1["referee"], "Atilla Karaoğlan")
+            self.assertEqual(d1["attendance"], "49.500")
+            self.assertEqual(d1["halftime_score"], "2 - 0")
+            self.assertEqual(len(d1["events"]), 3)
+            self.assertEqual(d1["events"][0]["minute"], "29'")
+            self.assertEqual(d1["events"][0]["assist"], "Barış Alper Yılmaz")
+            self.assertEqual(d1["events"][1]["minute"], "45+2'")
+            self.assertTrue(d1["events"][1]["is_penalty"])
+            self.assertEqual(d1["events"][1]["assist"], "")
+            self.assertEqual(len(d1["cards"]), 1)
+            self.assertEqual(d1["cards"][0]["player"], "Alexander Djiku")
+            self.assertEqual(mock_get.call_count, 1)
+
+            # İkinci çağrı DB önbelleğinden gelmeli (dış HTTP isteği tekrar atılmamalı)
+            res2 = self.client.get(f"/api/rivalry/match/{m.id}/")
+            self.assertEqual(res2.status_code, status.HTTP_200_OK)
+            self.assertEqual(mock_get.call_count, 1)
+
+
 
 
 

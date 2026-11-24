@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -60,6 +60,37 @@ export default function RivalryScreen({ navigation, route }) {
   const [pickerSearch, setPickerSearch] = useState('');
   const [matchSearch, setMatchSearch] = useState('');
   const [visibleCount, setVisibleCount] = useState(60);
+  const [selectedMatch, setSelectedMatch] = useState(null);
+  const [matchDetail, setMatchDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const activeDetailReqRef = useRef(0);
+
+  const handleOpenMatchDetail = useCallback(async (matchObj) => {
+    if (!matchObj?.id) return;
+    const reqId = ++activeDetailReqRef.current;
+    setSelectedMatch(matchObj);
+    setMatchDetail(null);
+    setDetailLoading(true);
+    try {
+      const detail = await superligApi.getRivalryMatchDetail(matchObj.id);
+      if (activeDetailReqRef.current === reqId && detail) {
+        setMatchDetail(detail);
+      }
+    } catch (err) {
+      console.log('Rivalry match detail error:', err?.message);
+    } finally {
+      if (activeDetailReqRef.current === reqId) {
+        setDetailLoading(false);
+      }
+    }
+  }, []);
+
+  const handleCloseMatchDetail = useCallback(() => {
+    activeDetailReqRef.current += 1;
+    setSelectedMatch(null);
+    setMatchDetail(null);
+    setDetailLoading(false);
+  }, []);
 
   const loadRivalry = useCallback(
     async (id1, id2, comp = competition, forceRefresh = false) => {
@@ -270,7 +301,11 @@ export default function RivalryScreen({ navigation, route }) {
   const renderBiggestWinRow = (label, matchObj, badgeColor) => {
     if (!matchObj) return null;
     return (
-      <View style={styles.recordItem}>
+      <TouchableOpacity
+        style={styles.recordItem}
+        activeOpacity={0.75}
+        onPress={() => handleOpenMatchDetail(matchObj)}
+      >
         <View style={[styles.recordDot, { backgroundColor: badgeColor }]} />
         <View style={{ flex: 1 }}>
           <Text style={styles.recordLabel}>{label}</Text>
@@ -283,7 +318,7 @@ export default function RivalryScreen({ navigation, route }) {
           <Text style={styles.recordSeason}>{matchObj.season_label}</Text>
           <Text style={styles.recordDate}>{matchObj.match_date_display}</Text>
         </View>
-      </View>
+      </TouchableOpacity>
     );
   };
 
@@ -639,8 +674,10 @@ export default function RivalryScreen({ navigation, route }) {
                 const awayWon = !isNS && m.away_score > m.home_score;
 
                 return (
-                  <View
+                  <TouchableOpacity
                     key={m.tm_match_id || m.id}
+                    activeOpacity={0.78}
+                    onPress={() => handleOpenMatchDetail(m)}
                     style={[
                       styles.matchCard,
                       isT1Winner && styles.matchCardT1,
@@ -720,13 +757,16 @@ export default function RivalryScreen({ navigation, route }) {
                       </View>
                     </View>
 
-                    {/* Footer if attendance or winner pill */}
-                    {Boolean(m.attendance) && (
-                      <View style={styles.matchFooterRow}>
+                    {/* Footer */}
+                    <View style={styles.matchFooterRow}>
+                      {Boolean(m.attendance) ? (
                         <Text style={styles.attendanceText}>👥 Seyirci: {m.attendance}</Text>
-                      </View>
-                    )}
-                  </View>
+                      ) : (
+                        <View />
+                      )}
+                      <Text style={styles.detailHintText}>Detaylar →</Text>
+                    </View>
+                  </TouchableOpacity>
                 );
               })
             )}
@@ -808,6 +848,144 @@ export default function RivalryScreen({ navigation, route }) {
             />
           </View>
         </View>
+      </Modal>
+
+      {/* MATCH DETAIL MODAL */}
+      <Modal
+        visible={Boolean(selectedMatch)}
+        transparent
+        animationType="fade"
+        onRequestClose={handleCloseMatchDetail}
+      >
+        <TouchableOpacity
+          style={styles.detailModalOverlay}
+          activeOpacity={1}
+          onPress={handleCloseMatchDetail}
+        >
+          {selectedMatch && (() => {
+            const activeMatch =
+              matchDetail && String(matchDetail.id) === String(selectedMatch.id)
+                ? matchDetail
+                : selectedMatch;
+            const isNS =
+              activeMatch.status !== 'FT' ||
+              activeMatch.home_score === null ||
+              activeMatch.away_score === null;
+            const events = Array.isArray(activeMatch.events) ? activeMatch.events : [];
+            const cards = Array.isArray(activeMatch.cards) ? activeMatch.cards : [];
+
+            return (
+              <View style={styles.detailModalCard} onStartShouldSetResponder={() => true}>
+                <Text style={styles.detailModalHeader}>
+                  {activeMatch.season_label} • {activeMatch.competition}
+                  {activeMatch.round_label ? ` • ${activeMatch.round_label}` : ''}
+                </Text>
+
+                <View style={styles.detailTeamsRow}>
+                  <View style={styles.detailTeamCol}>
+                    <Image
+                      source={{ uri: activeMatch.home_team?.logo_url || DEFAULT_TEAM_LOGO }}
+                      style={styles.detailTeamLogo}
+                    />
+                    <Text style={styles.detailTeamName} numberOfLines={2}>
+                      {activeMatch.home_team?.name}
+                    </Text>
+                  </View>
+
+                  <View style={styles.detailScoreWrap}>
+                    <Text style={styles.detailScoreText}>
+                      {isNS ? '- : -' : `${activeMatch.home_score} - ${activeMatch.away_score}`}
+                    </Text>
+                    {Boolean(activeMatch.score_note) && (
+                      <Text style={styles.detailScoreNote}>{activeMatch.score_note}</Text>
+                    )}
+                  </View>
+
+                  <View style={styles.detailTeamCol}>
+                    <Image
+                      source={{ uri: activeMatch.away_team?.logo_url || DEFAULT_TEAM_LOGO }}
+                      style={styles.detailTeamLogo}
+                    />
+                    <Text style={styles.detailTeamName} numberOfLines={2}>
+                      {activeMatch.away_team?.name}
+                    </Text>
+                  </View>
+                </View>
+
+                <ScrollView style={{ maxHeight: 280 }} showsVerticalScrollIndicator={false}>
+                  <Text style={styles.detailMeta}>
+                    • Durum: {activeMatch.status_display || (isNS ? 'Oynanacak' : 'Maç Bitti (MS)')}
+                  </Text>
+                  <Text style={styles.detailMeta}>
+                    • Tarih: {activeMatch.match_date_display || '-'}
+                    {activeMatch.match_time ? ` • ${activeMatch.match_time}` : ''}
+                  </Text>
+                  {Boolean(activeMatch.halftime_score) && (
+                    <Text style={styles.detailMeta}>
+                      • İlk Yarı: {activeMatch.halftime_score}
+                    </Text>
+                  )}
+                  <Text style={styles.detailMeta}>
+                    • Stadyum: {activeMatch.venue || 'Belirtilmedi'}
+                  </Text>
+                  <Text style={styles.detailMeta}>
+                    • Hakem: {activeMatch.referee || 'TFF Ataması'}
+                  </Text>
+                  {Boolean(activeMatch.attendance) && (
+                    <Text style={styles.detailMeta}>• Seyirci: {activeMatch.attendance}</Text>
+                  )}
+
+                  {detailLoading ? (
+                    <View style={styles.detailLoadingBox}>
+                      <ActivityIndicator size="small" color={COLORS.accentBlue} />
+                      <Text style={styles.detailLoadingText}>
+                        Gol ve maç olayları yükleniyor...
+                      </Text>
+                    </View>
+                  ) : (
+                    <>
+                      {events.length > 0 ? (
+                        <View style={styles.detailEventsBox}>
+                          <Text style={styles.detailEvTitle}>Goller:</Text>
+                          {events.map((e, i) => (
+                            <Text key={i} style={styles.detailMeta}>
+                              ⚽ {e.minute ? `${e.minute} ` : ''}
+                              {e.scorer}
+                              {e.is_penalty ? ' (P)' : ''}
+                              {e.is_own_goal ? ' (KK)' : ''}
+                              {e.assist && !e.is_own_goal ? ` (Asist: ${e.assist})` : ''}{' '}
+                              ({e.team_short || e.team_name})
+                            </Text>
+                          ))}
+                        </View>
+                      ) : !isNS && Number(activeMatch.home_score || 0) + Number(activeMatch.away_score || 0) === 0 ? (
+                        <View style={styles.detailEventsBox}>
+                          <Text style={styles.detailMeta}>⚽ Gol sesi çıkmadı (0 - 0)</Text>
+                        </View>
+                      ) : null}
+
+                      {cards.length > 0 && (
+                        <View style={styles.detailEventsBox}>
+                          <Text style={styles.detailEvTitle}>Kırmızı Kartlar:</Text>
+                          {cards.map((c, i) => (
+                            <Text key={i} style={styles.detailMeta}>
+                              🟥 {c.minute ? `${c.minute} ` : ''}
+                              {c.player} ({c.card_type}) ({c.team_short || c.team_name})
+                            </Text>
+                          ))}
+                        </View>
+                      )}
+                    </>
+                  )}
+                </ScrollView>
+
+                <TouchableOpacity style={styles.detailCloseBtn} onPress={handleCloseMatchDetail}>
+                  <Text style={styles.detailCloseBtnText}>Tamam</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          })()}
+        </TouchableOpacity>
       </Modal>
     </View>
   );
@@ -1123,9 +1301,11 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: 'rgba(255,255,255,0.04)',
     flexDirection: 'row',
-    justifyContent: 'flex-end',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   attendanceText: { color: COLORS.textDim, fontSize: 9, fontWeight: '600' },
+  detailHintText: { color: COLORS.accentBlue, fontSize: 10, fontWeight: '800' },
   loadMoreBtn: {
     backgroundColor: COLORS.backgroundCard,
     borderWidth: 1,
@@ -1192,5 +1372,69 @@ const styles = StyleSheet.create({
   modalTeamName: { color: COLORS.white, fontSize: 13, fontWeight: '800' },
   modalTeamSub: { color: COLORS.textDim, fontSize: 10, marginTop: 1 },
   selectedCheck: { color: COLORS.accentGreen, fontSize: 16, fontWeight: '900' },
+  detailModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  detailModalCard: {
+    backgroundColor: '#101626',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorderStrong,
+    padding: 16,
+  },
+  detailModalHeader: {
+    color: COLORS.accentBlue,
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  detailTeamsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.cardBorder,
+  },
+  detailTeamCol: { flex: 1, alignItems: 'center', gap: 6 },
+  detailTeamLogo: { width: 38, height: 38, resizeMode: 'contain' },
+  detailTeamName: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  detailScoreWrap: { alignItems: 'center', paddingHorizontal: 10 },
+  detailScoreText: { color: COLORS.white, fontSize: 22, fontWeight: '900' },
+  detailScoreNote: { color: COLORS.accentGold, fontSize: 10, fontWeight: '800', marginTop: 2 },
+  detailMeta: { color: COLORS.textSoft, fontSize: 12, marginBottom: 5, lineHeight: 18 },
+  detailLoadingBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
+    paddingVertical: 6,
+  },
+  detailLoadingText: { color: COLORS.textMuted, fontSize: 11 },
+  detailEventsBox: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.cardBorder,
+  },
+  detailEvTitle: { color: COLORS.white, fontSize: 12, fontWeight: '800', marginBottom: 4 },
+  detailCloseBtn: {
+    backgroundColor: COLORS.accentRed,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+    marginTop: 14,
+  },
+  detailCloseBtnText: { color: COLORS.white, fontSize: 13, fontWeight: '800' },
 });
 

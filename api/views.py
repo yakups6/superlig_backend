@@ -1431,6 +1431,41 @@ class TeamRivalryView(APIView):
         )
 
 
+class RivalryMatchDetailView(APIView):
+    """
+    Rekabet sekmesindeki belirli bir maçın stadyum, hakem, ilk yarı skoru, goller ve kartlar detayını döner.
+    Örnek: /api/rivalry/match/123/
+    """
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+
+    @extend_schema(
+        tags=['10. Oyuncu Karşılaştırma & Algoritmik Analiz'],
+        summary="Rekabet Maçı Detayı (Goller, Hakem, Stadyum, İlk Yarı)",
+        parameters=[
+            OpenApiParameter(name='refresh', type=bool, required=False, description='Maç raporunu yeniden çek (true/false)'),
+        ],
+        responses={200: OpenApiTypes.OBJECT},
+    )
+    def get(self, request, match_id):
+        from .integrations.rivalry_service import RivalryService
+
+        force_refresh = str(request.query_params.get('refresh', '')).lower() in ('true', '1')
+        if force_refresh:
+            detail = RivalryService.get_match_detail(match_id, force_refresh=True)
+            if not detail:
+                return Response({"error": "Rekabet maçı bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(detail)
+
+        def _build():
+            detail = RivalryService.get_match_detail(match_id, force_refresh=False)
+            if not detail:
+                return Response({"error": "Rekabet maçı bulunamadı."}, status=status.HTTP_404_NOT_FOUND)
+            return Response(detail)
+
+        return _cached_response('rivalry_match', request, 600, _build)
+
+
 class HomeSummaryView(APIView):
     """
     1. Fotoğraftaki Ana Sayfa menüleri ve özet sayaçları

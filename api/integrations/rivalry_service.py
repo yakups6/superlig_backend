@@ -133,6 +133,7 @@ class RivalryService:
         "/saison_id/0/wettbewerb_id//datum_von/0000-00-00/datum_bis/0000-00-00"
         "/day/0/gegner_id/{tm_id2}/plus/1"
     )
+    SPIELBERICHT_URL = "https://www.transfermarkt.com.tr/spielbericht/index/spielbericht/{match_id}"
 
     @classmethod
     def resolve_team_tm_id(cls, team: Team):
@@ -726,3 +727,259 @@ class RivalryService:
             },
             "matches": serialized_matches,
         }
+
+    @staticmethod
+    def _parse_tm_clock_minute(uhr_el) -> str:
+        """Transfermarkt .sb-aktion-uhr sprite konumundan maç dakikasını (örn: 29', 45+2') çözer."""
+        if not uhr_el:
+            return ""
+        sprite = uhr_el.select_one(".sb-sprite-uhr-klein")
+        if not sprite:
+            raw = uhr_el.get_text(strip=True)
+            return f"{raw}'" if raw and not raw.endswith("'") else raw
+        style = sprite.get("style", "")
+        m_pos = re.search(r"background-position:\s*(-?\d+)px\s+(-?\d+)px", style)
+        if not m_pos:
+            return ""
+        x_val = abs(int(m_pos.group(1)))
+        y_val = abs(int(m_pos.group(2)))
+        col = x_val // 36
+        row = y_val // 36
+        base_min = row * 10 + col + 1
+        extra_txt = sprite.get_text(" ", strip=True)
+        m_extra = re.search(r"\+\s*(\d+)", extra_txt)
+        if m_extra:
+            return f"{base_min}+{m_extra.group(1)}'"
+        return f"{base_min}'"
+
+    @classmethod
+    def fetch_transfermarkt_match_detail(cls, match: RivalryMatch, session=None):
+        """Transfermarkt maç raporu (spielbericht) sayfasından stadyum, hakem, ilk yarı, goller ve kartları çeker."""
+        raw_id = str(match.tm_match_id or "")
+        m_id = re.match(r"^TM_(\d+)$", raw_id)
+        if not m_id:
+            return None
+
+        url = cls.SPIELBERICHT_URL.format(match_id=m_id.group(1))
+        http = session or requests
+        try:
+            resp = http.get(url, headers=TransfermarktScraper.HEADERS, timeout=15)
+            if resp.status_code != 200:
+                return None
+        except Exception:
+            return None
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        venue = ""
+        referee = ""
+        attendance = ""
+
+        zusatz = soup.select_one(".sb-zusatzinfos")
+        if zusatz:
+            venue_a = zusatz.select_one('a[href*="/stadion/"]')
+            if venue_a:
+                venue = venue_a.get_text(" ", strip=True)
+            ref_a = zusatz.select_one('a[href*="/schiedsrichter/"]')
+            if ref_a:
+                referee = ref_a.get_text(" ", strip=True)
+            z_txt = zusatz.get_text(" ", strip=True)
+            m_att = re.search(r"([\d\.]+)\s*seyirci", z_txt, re.I)
+            if m_att:
+                attendance = m_att.group(1)
+
+        halftime_score = ""
+        ht_el = soup.select_one(".sb-halbzeit")
+        if ht_el:
+            ht_raw = ht_el.get_text(" ", strip=True)
+            m_ht = re.search(r"(\d+)\s*:\s*(\d+)", ht_raw)
+            if m_ht:
+                halftime_score = f"{m_ht.group(1)} - {m_ht.group(2)}"
+
+        home_short = match.home_team.short_name or match.home_team.name[:3].upper()
+        away_short = match.away_team.short_name or match.away_team.name[:3].upper()
+
+        events = []
+        for li in soup.select("#sb-tore li"):
+            li_classes = li.get("class") or []
+            side = "home" if "sb-aktion-heim" in li_classes else "away"
+            team_obj = match.home_team if side == "home" else match.away_team
+            t_short = home_short if side == "home" else away_short
+
+            minute = cls._parse_tm_clock_minute(li.select_one(".sb-aktion-uhr"))
+            stand_el = li.select_one(".sb-aktion-spielstand")
+            score_after = stand_el.get_text(" ", strip=True) if stand_el else ""
+
+            aktion = li.select_one(".sb-aktion-aktion")
+            aktion_text = aktion.get_text(" ", strip=True) if aktion else ""
+            players_a = aktion.select("a.wichtig") if aktion else []
+            scorer = players_a[0].get_text(" ", strip=True) if len(players_a) >= 1 else ""
+
+            low_txt = aktion_text.lower()
+            is_penalty = "penalt" in low_txt and "asist: penalt" not in low_txt
+            if "penaltı" in aktion_text.split("Asist:")[0].lower():
+                is_penalty = True
+            is_own_goal = "kendi kalesine" in low_txt or "kk" in low_txt
+
+            assist = ""
+            if len(players_a) >= 2 and "asist:" in low_txt and "asist: penalt" not in low_txt and not is_own_goal:
+                assist = players_a[1].get_text(" ", strip=True)
+
+            if scorer:
+                events.append(
+                    {
+                        "side": side,
+                        "team_short": t_short,
+                        "team_name": team_obj.name,
+                        "minute": minute,
+                        "score_after": score_after,
+                        "scorer": scorer,
+                        "assist": assist,
+                        "is_penalty": is_penalty,
+                        "is_own_goal": is_own_goal,
+                    }
+                )
+
+        cards = []
+        for li in soup.select("#sb-karten li"):
+            aktion = li.select_one(".sb-aktion-aktion")
+            aktion_text = aktion.get_text(" ", strip=True) if aktion else ""
+            low_txt = aktion_text.lower()
+            if "kırmızı" not in low_txt and "2. sarı" not in low_txt and "ikinci sarı" not in low_txt:
+                continue
+            li_classes = li.get("class") or []
+            side = "home" if "sb-aktion-heim" in li_classes else "away"
+            team_obj = match.home_team if side == "home" else match.away_team
+            t_short = home_short if side == "home" else away_short
+            minute = cls._parse_tm_clock_minute(li.select_one(".sb-aktion-uhr"))
+            players_a = aktion.select("a.wichtig") if aktion else []
+            player_name = players_a[0].get_text(" ", strip=True) if players_a else ""
+            card_type = "2. Sarıdan Kırmızı" if ("2. sarı" in low_txt or "ikinci sarı" in low_txt) else "Kırmızı Kart"
+            if player_name:
+                cards.append(
+                    {
+                        "side": side,
+                        "team_short": t_short,
+                        "team_name": team_obj.name,
+                        "minute": minute,
+                        "player": player_name,
+                        "card_type": card_type,
+                    }
+                )
+
+        return {
+            "venue": venue,
+            "referee": referee,
+            "attendance": attendance,
+            "halftime_score": halftime_score,
+            "events": events,
+            "cards": cards,
+        }
+
+    @classmethod
+    def get_match_detail(cls, match_id: int, force_refresh: bool = False):
+        """Rekabet maçının tüm detaylarını (stadyum, hakem, İY skoru, goller, kırmızı kartlar) döner."""
+        match = (
+            RivalryMatch.objects.select_related("home_team", "away_team")
+            .filter(id=match_id)
+            .first()
+        )
+        if not match:
+            return None
+
+        if force_refresh or not match.details_fetched:
+            local_fix = Fixture.objects.filter(
+                season__name=match.season_label,
+                home_team=match.home_team,
+                away_team=match.away_team,
+            ).first()
+
+            tm_detail = cls.fetch_transfermarkt_match_detail(match) if match.status == "FT" else None
+
+            venue = (
+                (tm_detail.get("venue") if tm_detail else "")
+                or match.venue
+                or (local_fix.venue if local_fix else "")
+                or (match.home_team.stadium or "")
+            )
+            referee = (
+                (tm_detail.get("referee") if tm_detail else "")
+                or match.referee
+                or (local_fix.referee if local_fix else "")
+            )
+            attendance = (
+                (tm_detail.get("attendance") if tm_detail else "")
+                or match.attendance
+            )
+            halftime_score = (
+                (tm_detail.get("halftime_score") if tm_detail else "")
+                or match.halftime_score
+            )
+            events = tm_detail.get("events", []) if tm_detail else list(match.events_json or [])
+            if not events and local_fix:
+                from api.integrations.api_football import APIFootballService
+                events = list(APIFootballService.get_cached_events(local_fix.id) or [])
+            cards = tm_detail.get("cards", []) if tm_detail else list(match.cards_json or [])
+
+            match.venue = venue[:150]
+            match.referee = referee[:100]
+            match.attendance = attendance[:30]
+            match.halftime_score = halftime_score[:30]
+            match.events_json = events
+            match.cards_json = cards
+            # Oynanacak (NS) veya dış erişim başarısız olduğunda sabit önbelleğe kitleme
+            if tm_detail is not None or not str(match.tm_match_id or "").startswith("TM_") or match.status != "FT":
+                match.details_fetched = True
+            match.save(
+                update_fields=[
+                    "venue",
+                    "referee",
+                    "attendance",
+                    "halftime_score",
+                    "events_json",
+                    "cards_json",
+                    "details_fetched",
+                ]
+            )
+
+        is_ft = match.status == "FT" and match.home_score is not None and match.away_score is not None
+        if is_ft:
+            status_display = f"Maç Bitti (MS) • {match.score_note}" if match.score_note else "Maç Bitti (MS)"
+        else:
+            status_display = f"Oynanacak ({match.match_date_display} {match.match_time})".strip()
+
+        return {
+            "id": match.id,
+            "tm_match_id": match.tm_match_id,
+            "season_label": match.season_label,
+            "competition": match.competition,
+            "round_label": match.round_label,
+            "match_date": match.match_date.isoformat() if match.match_date else None,
+            "match_date_display": match.match_date_display or (match.match_date.isoformat() if match.match_date else ""),
+            "match_time": match.match_time,
+            "status": "FT" if is_ft else "NS",
+            "status_display": status_display,
+            "home_team": {
+                "id": match.home_team.id,
+                "name": match.home_team.name,
+                "short_name": match.home_team.short_name or match.home_team.name[:3].upper(),
+                "logo_url": match.home_team.logo_url,
+                "rank": match.home_rank,
+            },
+            "away_team": {
+                "id": match.away_team.id,
+                "name": match.away_team.name,
+                "short_name": match.away_team.short_name or match.away_team.name[:3].upper(),
+                "logo_url": match.away_team.logo_url,
+                "rank": match.away_rank,
+            },
+            "home_score": match.home_score,
+            "away_score": match.away_score,
+            "score_note": match.score_note,
+            "halftime_score": match.halftime_score,
+            "venue": match.venue or match.home_team.stadium or "",
+            "referee": match.referee or "",
+            "attendance": match.attendance or "",
+            "events": list(match.events_json or []),
+            "cards": list(match.cards_json or []),
+        }
+

@@ -423,6 +423,13 @@ export const superligApi = {
       skipCache: refresh,
     });
   },
+  getRivalryMatchDetail: async (matchId, forceRefresh = false) => {
+    const params = forceRefresh ? { refresh: 'true' } : {};
+    return cachedGet(`/rivalry/match/${matchId}/`, params, {
+      ttlMs: 600000,
+      skipCache: forceRefresh,
+    });
+  },
 
   // 8. Standings & Leaders
   getStandings: async (params = {}, forceRefresh = false) => {

@@ -411,6 +411,12 @@ class RivalryMatch(models.Model):
     score_note = models.CharField(max_length=20, blank=True, help_text="Örn: UZT, PEN")
     status = models.CharField(max_length=15, default='FT', help_text="FT (Bitti) veya NS (Oynanacak)")
     attendance = models.CharField(max_length=30, blank=True)
+    venue = models.CharField(max_length=150, blank=True)
+    referee = models.CharField(max_length=100, blank=True)
+    halftime_score = models.CharField(max_length=30, blank=True)
+    events_json = models.JSONField(default=list, blank=True)
+    cards_json = models.JSONField(default=list, blank=True)
+    details_fetched = models.BooleanField(default=False)
 
     class Meta:
         verbose_name = "Rekabet Maçı"
