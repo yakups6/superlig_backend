@@ -919,6 +919,8 @@ class SuperLigAPITestCase(TestCase):
 
         sample_html = """
         <html><body>
+          <div class="sb-team"><a class="sb-vereinslink" href="/galatasaray-istanbul/startseite/verein/141/saison_id/2026">Galatasaray</a></div>
+          <div class="sb-team"><a class="sb-vereinslink" href="/fenerbahce-istanbul/startseite/verein/36/saison_id/2026">Fenerbahçe</a></div>
           <p class="sb-zusatzinfos">
             <a href="/stadion/stadion/verein/141/saison_id/2026">RAMS Park</a> | <strong>49.500 seyirci</strong>
             <strong>Hakem:</strong> <a href="/atilla-karaoglan/profil/schiedsrichter/10">Atilla Karaoğlan</a>
@@ -938,20 +940,38 @@ class SuperLigAPITestCase(TestCase):
               <div class="sb-aktion-spielstand">2:0</div>
               <div class="sb-aktion-aktion">
                 <a class="wichtig" href="/osimhen">Victor Osimhen</a>, Penaltı<br/>
-                Asist: Penaltı: Elle oynayan oyuncu <a class="wichtig" href="/kostic">Filip Kostić</a>
+                Asist: <a class="wichtig" href="/kostic">Filip Kostić</a> , Penaltı: Faul yapılan oyuncu
               </div>
             </li>
             <li class="sb-aktion-gast">
               <div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: -36px -216px;">&nbsp;</span></div>
               <div class="sb-aktion-spielstand">2:1</div>
               <div class="sb-aktion-aktion">
-                <a class="wichtig" href="/irfan">İrfan Can Kahveci</a>, Sol ayakla şut
+                <a class="wichtig" href="/hakki">Hakkı İyibilir</a>, Sol ayakla şut
               </div>
             </li>
           </ul></div>
           <div id="sb-karten"><ul>
-            <li class="sb-aktion-heim"><div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: 0px -36px;">&nbsp;</span></div><div class="sb-aktion-aktion"><a class="wichtig" href="/torreira">Lucas Torreira</a><br/>1. Sarı kart, Faul</div></li>
-            <li class="sb-aktion-gast"><div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: -288px -288px;">&nbsp;</span></div><div class="sb-aktion-aktion"><a class="wichtig" href="/djiku">Alexander Djiku</a><br/>2. Sarı karttan kırmızı kart, Faul</div></li>
+            <li class="sb-aktion-gast">
+              <div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: -324px -0px;">&nbsp;</span></div>
+              <div class="sb-aktion-spielstand"><span class="sb-sprite sb-gelb">&nbsp;</span></div>
+              <div class="sb-aktion-aktion"><a class="wichtig" href="/irfan">İrfan Can Kahveci</a><br/>2. Sarı kart , Faul</div>
+            </li>
+            <li class="sb-aktion-heim">
+              <div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: 0px -36px;">&nbsp;</span></div>
+              <div class="sb-aktion-spielstand"><span class="sb-sprite sb-gelb">&nbsp;</span></div>
+              <div class="sb-aktion-aktion"><a class="wichtig" href="/torreira">Lucas Torreira</a><br/>1. Sarı kart, Faul</div>
+            </li>
+            <li class="sb-aktion-gast">
+              <div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: -288px -288px;">&nbsp;</span></div>
+              <div class="sb-aktion-spielstand"><span class="sb-sprite sb-gelbrot">&nbsp;</span></div>
+              <div class="sb-aktion-aktion"><a class="wichtig" href="/djiku">Alexander Djiku</a><br/>Sarı-kırmızı kart , Faul</div>
+            </li>
+            <li class="sb-aktion-heim">
+              <div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: -0px -433px;">&nbsp;</span></div>
+              <div class="sb-aktion-spielstand"><span class="sb-sprite sb-rot">&nbsp;</span></div>
+              <div class="sb-aktion-aktion"><a class="wichtig" href="/abdulkerim">Abdülkerim Bardakcı</a><br/>Kırmızı kart , Fiziksel saldırı</div>
+            </li>
           </ul></div>
         </body></html>
         """
@@ -971,14 +991,105 @@ class SuperLigAPITestCase(TestCase):
             self.assertEqual(d1["events"][1]["minute"], "45+2'")
             self.assertTrue(d1["events"][1]["is_penalty"])
             self.assertEqual(d1["events"][1]["assist"], "")
-            self.assertEqual(len(d1["cards"]), 1)
+            self.assertFalse(d1["events"][2]["is_own_goal"])
+            # 2. Sarı kart (sezonun 2. sarısı, sb-gelb) kırmızı kart listesine GİRMEMELİ
+            self.assertEqual(len(d1["cards"]), 2)
             self.assertEqual(d1["cards"][0]["player"], "Alexander Djiku")
+            self.assertEqual(d1["cards"][0]["card_type"], "2. Sarıdan Kırmızı")
+            self.assertEqual(d1["cards"][0]["minute"], "89'")
+            self.assertEqual(d1["cards"][1]["player"], "Abdülkerim Bardakcı")
+            self.assertEqual(d1["cards"][1]["card_type"], "Kırmızı Kart")
+            # -0px -433px bilinmeyen/maç sonu ikonu 121' üretmemeli
+            self.assertEqual(d1["cards"][1]["minute"], "")
             self.assertEqual(mock_get.call_count, 1)
 
             # İkinci çağrı DB önbelleğinden gelmeli (dış HTTP isteği tekrar atılmamalı)
             res2 = self.client.get(f"/api/rivalry/match/{m.id}/")
             self.assertEqual(res2.status_code, status.HTTP_200_OK)
             self.assertEqual(mock_get.call_count, 1)
+
+    def test_rivalry_match_detail_edge_cases_swap_ns_and_cup(self):
+        """Tarafsız sahada ters takım sırası, kendi kalesine gol, NS kilitlememe ve kupa maçı izolasyonu"""
+        from unittest.mock import Mock
+        from api.models import RivalryMatch
+
+        Fixture.objects.create(
+            season=self.season,
+            round_name="1. Hafta",
+            round_number=1,
+            home_team=self.gs,
+            away_team=self.fb,
+            match_date=timezone.now(),
+            venue="Yanlış Lig Stadı",
+            referee="Lig Hakemi",
+            status="FT",
+        )
+
+        # NS (oynanacak) kupa maçı lig fikstüründen etkilenmemeli ve details_fetched=True olmamalı
+        ns_cup = RivalryMatch.objects.create(
+            tm_match_id="TM_9990001",
+            season_label="2026/2027",
+            start_year=2026,
+            competition="Türkiye Kupası",
+            round_label="Yarı Final",
+            match_date=date(2027, 4, 15),
+            match_date_display="15 Nis 2027",
+            match_time="20:45",
+            home_team=self.gs,
+            away_team=self.fb,
+            status="NS",
+        )
+        ns_res = self.client.get(f"/api/rivalry/match/{ns_cup.id}/")
+        self.assertEqual(ns_res.status_code, status.HTTP_200_OK)
+        ns_data = ns_res.json()
+        self.assertEqual(ns_data["referee"], "")
+        ns_cup.refresh_from_db()
+        self.assertFalse(ns_cup.details_fetched)
+
+        # TM header ters sırada (FB ev, GS deplasman) olduğunda taraf ve İY skoru düzeltilmeli
+        cup_ft = RivalryMatch.objects.create(
+            tm_match_id="TM_9990002",
+            season_label="2026/2027",
+            start_year=2026,
+            competition="Türkiye Kupası",
+            round_label="Final",
+            match_date=date(2027, 5, 1),
+            match_date_display="1 May 2027",
+            home_team=self.gs,
+            away_team=self.fb,
+            home_score=1,
+            away_score=0,
+            status="FT",
+        )
+        swapped_html = """
+        <html><body>
+          <div class="sb-team"><a class="sb-vereinslink" href="/fenerbahce/startseite/verein/36/saison_id/2026">Fenerbahçe</a></div>
+          <div class="sb-team"><a class="sb-vereinslink" href="/galatasaray/startseite/verein/141/saison_id/2026">Galatasaray</a></div>
+          <div class="sb-halbzeit">(0:1)</div>
+          <div id="sb-tore"><ul>
+            <li class="sb-aktion-gast">
+              <div class="sb-aktion-uhr"><span class="sb-sprite-uhr-klein" style="background-position: -36px -36px;">&nbsp;</span></div>
+              <div class="sb-aktion-spielstand">0:1</div>
+              <div class="sb-aktion-aktion">
+                <a class="wichtig" href="/lafont">Alban Lafont</a> , Kendi kalesine gol Asist: <a class="wichtig" href="/sane">Leroy Sané</a> , Orta
+              </div>
+            </li>
+          </ul></div>
+        </body></html>
+        """
+        with patch(
+            "api.integrations.rivalry_service.requests.get",
+            return_value=Mock(status_code=200, text=swapped_html),
+        ):
+            res = self.client.get(f"/api/rivalry/match/{cup_ft.id}/")
+            self.assertEqual(res.status_code, status.HTTP_200_OK)
+            d = res.json()
+            self.assertEqual(d["halftime_score"], "1 - 0")
+            self.assertEqual(len(d["events"]), 1)
+            self.assertEqual(d["events"][0]["side"], "home")
+            self.assertEqual(d["events"][0]["team_short"], self.gs.short_name)
+            self.assertTrue(d["events"][0]["is_own_goal"])
+            self.assertEqual(d["events"][0]["assist"], "")
 
 
 

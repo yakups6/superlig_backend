@@ -458,6 +458,7 @@ class RivalryService:
                         existing.home_score = fix.home_score
                         existing.away_score = fix.away_score
                         existing.status = "FT"
+                        existing.details_fetched = False
                         if f_date:
                             existing.match_date = f_date
                             existing.match_date_display = f_date_disp
@@ -746,6 +747,9 @@ class RivalryService:
         col = x_val // 36
         row = y_val // 36
         base_min = row * 10 + col + 1
+        # sb-sprite-uhr-k.png yalnızca 1..120 dakikaları (satır 0..11, y < 432) kapsar; y >= 432 bilinmeyen/maç sonu ikonu
+        if col < 0 or col > 9 or y_val >= 432 or base_min < 1 or base_min > 120:
+            return ""
         extra_txt = sprite.get_text(" ", strip=True)
         m_extra = re.search(r"\+\s*(\d+)", extra_txt)
         if m_extra:
@@ -770,6 +774,22 @@ class RivalryService:
             return None
 
         soup = BeautifulSoup(resp.text, "html.parser")
+
+        tm_header_ids = []
+        for a in soup.select(".sb-team a.sb-vereinslink"):
+            m_v = re.search(r"/verein/(\d+)", a.get("href", ""))
+            if m_v:
+                tm_header_ids.append(int(m_v.group(1)))
+        db_home_tm_id = cls.resolve_team_tm_id(match.home_team)
+        db_away_tm_id = cls.resolve_team_tm_id(match.away_team)
+        is_swapped = (
+            len(tm_header_ids) >= 2
+            and db_home_tm_id is not None
+            and db_away_tm_id is not None
+            and tm_header_ids[0] == db_away_tm_id
+            and tm_header_ids[1] == db_home_tm_id
+        )
+
         venue = ""
         referee = ""
         attendance = ""
@@ -793,15 +813,23 @@ class RivalryService:
             ht_raw = ht_el.get_text(" ", strip=True)
             m_ht = re.search(r"(\d+)\s*:\s*(\d+)", ht_raw)
             if m_ht:
-                halftime_score = f"{m_ht.group(1)} - {m_ht.group(2)}"
+                if is_swapped:
+                    halftime_score = f"{m_ht.group(2)} - {m_ht.group(1)}"
+                else:
+                    halftime_score = f"{m_ht.group(1)} - {m_ht.group(2)}"
 
         home_short = match.home_team.short_name or match.home_team.name[:3].upper()
         away_short = match.away_team.short_name or match.away_team.name[:3].upper()
 
+        def _resolve_side(li_classes):
+            is_tm_home = "sb-aktion-heim" in (li_classes or [])
+            if is_swapped:
+                return "away" if is_tm_home else "home"
+            return "home" if is_tm_home else "away"
+
         events = []
         for li in soup.select("#sb-tore li"):
-            li_classes = li.get("class") or []
-            side = "home" if "sb-aktion-heim" in li_classes else "away"
+            side = _resolve_side(li.get("class") or [])
             team_obj = match.home_team if side == "home" else match.away_team
             t_short = home_short if side == "home" else away_short
 
@@ -814,14 +842,25 @@ class RivalryService:
             players_a = aktion.select("a.wichtig") if aktion else []
             scorer = players_a[0].get_text(" ", strip=True) if len(players_a) >= 1 else ""
 
-            low_txt = aktion_text.lower()
-            is_penalty = "penalt" in low_txt and "asist: penalt" not in low_txt
-            if "penaltı" in aktion_text.split("Asist:")[0].lower():
-                is_penalty = True
-            is_own_goal = "kendi kalesine" in low_txt or "kk" in low_txt
+            parts = re.split(r"\basist\s*:", aktion_text, maxsplit=1, flags=re.I)
+            goal_part = parts[0]
+            assist_part = parts[1] if len(parts) > 1 else ""
+
+            goal_meta = goal_part.lower()
+            if scorer:
+                goal_meta = goal_meta.replace(scorer.lower(), "", 1)
+
+            is_own_goal = ("kendi kalesine" in goal_meta) or bool(re.search(r"\(\s*kk\s*\)", goal_meta))
+            is_penalty = "penalt" in goal_meta
 
             assist = ""
-            if len(players_a) >= 2 and "asist:" in low_txt and "asist: penalt" not in low_txt and not is_own_goal:
+            if (
+                len(players_a) >= 2
+                and assist_part
+                and not is_own_goal
+                and not is_penalty
+                and "penalt" not in assist_part.lower()
+            ):
                 assist = players_a[1].get_text(" ", strip=True)
 
             if scorer:
@@ -843,17 +882,36 @@ class RivalryService:
         for li in soup.select("#sb-karten li"):
             aktion = li.select_one(".sb-aktion-aktion")
             aktion_text = aktion.get_text(" ", strip=True) if aktion else ""
-            low_txt = aktion_text.lower()
-            if "kırmızı" not in low_txt and "2. sarı" not in low_txt and "ikinci sarı" not in low_txt:
+            players_a = aktion.select("a.wichtig") if aktion else []
+            player_name = players_a[0].get_text(" ", strip=True) if players_a else ""
+
+            sprite_el = li.select_one(".sb-aktion-spielstand .sb-sprite")
+            sprite_classes = set(sprite_el.get("class") or []) if sprite_el else set()
+
+            if "sb-rot" in sprite_classes:
+                card_type = "Kırmızı Kart"
+            elif "sb-gelbrot" in sprite_classes:
+                card_type = "2. Sarıdan Kırmızı"
+            elif "sb-gelb" in sprite_classes:
                 continue
-            li_classes = li.get("class") or []
-            side = "home" if "sb-aktion-heim" in li_classes else "away"
+            else:
+                low_txt = aktion_text.lower()
+                action_only = low_txt.replace(player_name.lower(), "", 1) if player_name else low_txt
+                if (
+                    "sarı-kırmızı" in action_only
+                    or "sarı karttan kırmızı" in action_only
+                    or "ikinci sarıdan kırmızı" in action_only
+                ):
+                    card_type = "2. Sarıdan Kırmızı"
+                elif "kırmızı kart" in action_only:
+                    card_type = "Kırmızı Kart"
+                else:
+                    continue
+
+            side = _resolve_side(li.get("class") or [])
             team_obj = match.home_team if side == "home" else match.away_team
             t_short = home_short if side == "home" else away_short
             minute = cls._parse_tm_clock_minute(li.select_one(".sb-aktion-uhr"))
-            players_a = aktion.select("a.wichtig") if aktion else []
-            player_name = players_a[0].get_text(" ", strip=True) if players_a else ""
-            card_type = "2. Sarıdan Kırmızı" if ("2. sarı" in low_txt or "ikinci sarı" in low_txt) else "Kırmızı Kart"
             if player_name:
                 cards.append(
                     {
@@ -887,11 +945,13 @@ class RivalryService:
             return None
 
         if force_refresh or not match.details_fetched:
-            local_fix = Fixture.objects.filter(
-                season__name=match.season_label,
-                home_team=match.home_team,
-                away_team=match.away_team,
-            ).first()
+            local_fix = None
+            if match.competition == "Süper Lig":
+                local_fix = Fixture.objects.filter(
+                    season__name=match.season_label,
+                    home_team=match.home_team,
+                    away_team=match.away_team,
+                ).first()
 
             tm_detail = cls.fetch_transfermarkt_match_detail(match) if match.status == "FT" else None
 
@@ -927,7 +987,9 @@ class RivalryService:
             match.events_json = events
             match.cards_json = cards
             # Oynanacak (NS) veya dış erişim başarısız olduğunda sabit önbelleğe kitleme
-            if tm_detail is not None or not str(match.tm_match_id or "").startswith("TM_") or match.status != "FT":
+            if match.status == "FT" and (
+                tm_detail is not None or not str(match.tm_match_id or "").startswith("TM_")
+            ):
                 match.details_fetched = True
             match.save(
                 update_fields=[
